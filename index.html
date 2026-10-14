@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f2ed">
+  <title>户型生成工作台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <h1>户型生成工作台</h1>
+        <p>上传户型图 → 选房间与材质 → 本页 2D/3D 布置家具 → 造价与导出</p>
+      </div>
+      <span class="badge">纯浏览器 · 无需外链工具</span>
+    </header>
+
+    <div class="notice">
+      <strong>关于第一版</strong>
+      不会自动从图纸识别墙体。上传的户型图作为<strong>参照底图</strong>；墙体与房间使用内置可编辑样板（来自 floorplan-3d），你在本页完成家具、材质、测量、拆改非承重墙、3D 漫游与导出。
+    </div>
+
+    <nav class="steps" id="stepNav" aria-label="步骤"></nav>
+
+    <!-- 1 上传 -->
+    <section class="panel" data-panel="upload">
+      <h2>1. 上传户型图</h2>
+      <p class="lead">支持 PNG / JPG / WEBP。图片仅保存在本机浏览器 localStorage，不会上传到服务器。</p>
+      <div class="drop" id="dropZone" tabindex="0" role="button" aria-label="上传户型图">
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/*">
+        <div>
+          <strong>拖拽图片到此处</strong>，或点击选择文件
+          <div class="meta" style="margin-top:6px">建议清晰的平面户型图，便于对照描摹与布置</div>
+        </div>
+      </div>
+      <div class="preview-box hidden" id="previewBox">
+        <img id="previewImg" alt="户型图预览">
+        <div>
+          <div class="meta" id="previewMeta"></div>
+          <div class="row">
+            <button class="btn danger" type="button" id="clearImage">清除图片</button>
+            <button class="btn primary" type="button" data-goto="rooms">下一步：选房间 →</button>
+          </div>
+        </div>
+      </div>
+      <div class="row" id="skipUploadRow">
+        <button class="btn" type="button" data-goto="rooms">暂不上传，直接用样板 →</button>
+      </div>
+    </section>
+
+    <!-- 2 房间 -->
+    <section class="panel hidden" data-panel="rooms">
+      <h2>2. 选择房间 / 样板</h2>
+      <p class="lead">使用内置三居室样板（可测、可拆非承重墙）。勾选你关心的房间，进入设计器后可为它们统一套用材质。</p>
+      <div class="cards" id="templateCards"></div>
+      <h3 style="margin:16px 0 8px;font-size:1rem">样板房间</h3>
+      <div class="chips" id="roomChips"></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn" type="button" data-goto="upload">← 上一步</button>
+        <button class="btn" type="button" id="selectAllRooms">全选房间</button>
+        <button class="btn" type="button" id="clearRooms">清空勾选</button>
+        <button class="btn primary" type="button" data-goto="materials">下一步：选材质 →</button>
+      </div>
+    </section>
+
+    <!-- 3 材质 -->
+    <section class="panel hidden" data-panel="materials">
+      <h2>3. 地面 / 墙面材质</h2>
+      <p class="lead">列表来自 OpenPlan3D 与 floorplan-3d 的真实材质目录。地面带单价，进入设计器后按面积 ×1.05 损耗估算造价。</p>
+      <div class="mat-section">
+        <h3>地面材质（单选 · 将应用到已选房间）</h3>
+        <div class="chips" id="floorChips"></div>
+      </div>
+      <div class="mat-section">
+        <h3>墙面材质（单选 · OpenPlan3D 墙漆/贴面）</h3>
+        <div class="chips" id="wallChips"></div>
+      </div>
+      <label class="chip" style="margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="clearFurniture" style="margin-right:6px">
+        进入设计器时清空样板自带家具（从空白布置开始）
+      </label>
+      <div class="row" style="margin-top:14px">
+        <button class="btn" type="button" data-goto="rooms">← 上一步</button>
+        <button class="btn primary" type="button" data-goto="design">下一步：进入设计器 →</button>
+      </div>
+    </section>
+
+    <!-- 4 设计 -->
+    <section class="panel hidden" data-panel="design">
+      <h2>4. 本页设计器</h2>
+      <p class="lead">下方嵌入完整 2D 布置 + Three.js 3D 漫游。左侧拖家具，右侧改材质与造价，顶栏可导出 PNG/JSON。上传的户型图会作为 2D 参照底图。</p>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn" type="button" data-goto="materials">← 返回材质</button>
+        <button class="btn primary" type="button" id="openEditor">在本页打开 / 刷新设计器</button>
+        <button class="btn" type="button" id="openEditorTab">新标签打开设计器</button>
+        <button class="btn" type="button" data-goto="export">去结果与导出 →</button>
+      </div>
+      <div class="editor-frame-wrap">
+        <iframe id="editorFrame" title="户型设计器" src="about:blank"></iframe>
+      </div>
+      <p class="footer-note">设计器同源嵌入（./editor.html）。若 iframe 过矮，可用「新标签打开」获得全屏体验，数据仍写回同一 localStorage。</p>
+    </section>
+
+    <!-- 5 导出 -->
+    <section class="panel hidden" data-panel="export">
+      <h2>5. 结果与导出</h2>
+      <p class="lead">作业状态保存在 <code>localStorage['floorplan-pipeline-v1']</code>；设计方案保存在 <code>huxing-design-v1</code>。</p>
+      <div class="job-grid" id="jobStats"></div>
+      <h3 style="margin:16px 0 8px;font-size:1rem">作业 JSON</h3>
+      <textarea class="json-box" id="jobJson" readonly></textarea>
+      <div class="row">
+        <button class="btn primary" type="button" id="downloadJob">下载作业 JSON</button>
+        <button class="btn" type="button" id="copyJob">复制 JSON</button>
+        <button class="btn" type="button" data-goto="design">← 回到设计器</button>
+        <button class="btn danger" type="button" id="resetAll">清空本机作业与方案</button>
+      </div>
+      <p class="footer-note">PNG 导出请在设计器顶栏「文件 → 导出图片」完成（2D 或 3D 截图）。</p>
+    </section>
+
+    <!-- 能力说明 -->
+    <section class="panel">
+      <h2>本页实际能力</h2>
+      <p class="lead">整合自 floorplan-3d（本地编辑器）与 OpenPlan3D 材质目录；不连接外部 SaaS / MCP。</p>
+      <div class="matrix">
+        <table class="cap">
+          <thead>
+            <tr><th>能力</th><th>说明</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>上传户型图参照</td><td>作为 2D 底图，可调透明度</td><td>本页完成</td></tr>
+            <tr><td>2D 家具布置</td><td>60+ 家具家电，拖放 / 旋转 / 贴墙</td><td>本页完成</td></tr>
+            <tr><td>3D 漫游</td><td>Three.js 鸟瞰 + 第一人称</td><td>本页完成</td></tr>
+            <tr><td>地面材质 + 造价</td><td>样板材质 + OpenPlan3D 扩展，面积×单价×1.05</td><td>本页完成</td></tr>
+            <tr><td>墙面材质</td><td>OpenPlan3D 墙漆 / 砖石 / 木饰面等，按房间记录</td><td>本页完成</td></tr>
+            <tr><td>测量 / 拆改非承重墙</td><td>快捷键 M / X</td><td>本页完成</td></tr>
+            <tr><td>导出 PNG / JSON</td><td>设计器文件菜单；作业 JSON 在本向导</td><td>本页完成</td></tr>
+            <tr><td>自动识图建墙</td><td>未实现</td><td>不做</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
