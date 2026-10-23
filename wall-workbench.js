@@ -1,25 +1,128 @@
 /* 可校准临摹工作台 — 墙体几何 / 比例尺 / 房间环（纯前端，无构建）
- * 坐标系与 editor 一致：毫米 (mm)。墙体沿用 AABB：[x0,y0,x1,y1,kind]
+ * 坐标系与 editor 一致：毫米 (mm)。
+ *
+ * 墙体 schema（兼容扩展）：
+ * - 旧版正交 AABB 体矩形：[x0,y0,x1,y1,kind]
+ *   x0<x1, y0<y1；短边≈厚度，长边为走向。样板与已存档仍用此格式。
+ * - 中心线 + 厚度（支持斜墙）：[x0,y0,x1,y1,kind,thick]
+ *   (x0,y0)-(x1,y1) 为中心线端点；thick 为墙厚 mm。第 6 元为数字即中心线格式。
  * kind: b=承重 e=外墙 n=非承重 low=矮墙
+ *
+ * 新画的墙一律写中心线格式；读入时旧 AABB 原样保留，通过 wallCenterline / wallPolygon 统一消费。
  */
 (function (global) {
   'use strict';
 
   const DEFAULT_THICK = 240;
-  const GRID = 50; // 画墙吸附
+  const GRID = 50;
+  const ANGLE_SNAP_DEG = 15;
+  const CORNER_JOIN_TOL = 80; // 共享角点判定（mm）
 
-  function cloneWalls(ws) { return ws.map(w => w.slice()); }
+  function cloneWalls(ws) { return (ws || []).map(w => w.slice()); }
   function cloneRooms(rs) {
-    return rs.map(r => Object.assign({}, r, { poly: r.poly.map(p => p.slice()), at: r.at ? r.at.slice() : null }));
+    return (rs || []).map(r => Object.assign({}, r, { poly: r.poly.map(p => p.slice()), at: r.at ? r.at.slice() : null }));
   }
 
   function snap(v, g) { return Math.round(v / g) * g; }
+
+  function isCenterlineWall(w) {
+    return Array.isArray(w) && w.length >= 6 && typeof w[5] === 'number' && w[5] > 0;
+  }
+
+  function wallKind(w) { return (w && w[4]) || 'n'; }
+
+  function wallThickOf(w, fallback) {
+    if (isCenterlineWall(w)) return w[5];
+    if (!w) return fallback || DEFAULT_THICK;
+    const bw = Math.abs(w[2] - w[0]), bh = Math.abs(w[3] - w[1]);
+    const t = Math.min(bw, bh);
+    return t > 0 ? t : (fallback || DEFAULT_THICK);
+  }
+
+  /** 统一取中心线两端（旧 AABB → 沿长边中线） */
+  function wallCenterline(w) {
+    if (isCenterlineWall(w)) {
+      return { a: { x: w[0], y: w[1] }, b: { x: w[2], y: w[3] } };
+    }
+    const x0 = Math.min(w[0], w[2]), x1 = Math.max(w[0], w[2]);
+    const y0 = Math.min(w[1], w[3]), y1 = Math.max(w[1], w[3]);
+    const bw = x1 - x0, bh = y1 - y0;
+    if (bw >= bh) {
+      const y = (y0 + y1) / 2;
+      return { a: { x: x0, y: y }, b: { x: x1, y: y } };
+    }
+    const x = (x0 + x1) / 2;
+    return { a: { x: x, y: y0 }, b: { x: x, y: y1 } };
+  }
+
+  function wallSegLen(w) {
+    const cl = wallCenterline(w);
+    return Math.hypot(cl.b.x - cl.a.x, cl.b.y - cl.a.y);
+  }
+
+  function wallIsHorizontal(w) {
+    const cl = wallCenterline(w);
+    return Math.abs(cl.b.x - cl.a.x) >= Math.abs(cl.b.y - cl.a.y);
+  }
+
+  /** 厚度挤出的四边形（用于 2D 绘制 / 栅格涂墙） */
+  function wallPolygon(w) {
+    const cl = wallCenterline(w);
+    const thick = wallThickOf(w);
+    const dx = cl.b.x - cl.a.x, dy = cl.b.y - cl.a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = (-dy / len) * (thick / 2), ny = (dx / len) * (thick / 2);
+    return [
+      [cl.a.x + nx, cl.a.y + ny],
+      [cl.b.x + nx, cl.b.y + ny],
+      [cl.b.x - nx, cl.b.y - ny],
+      [cl.a.x - nx, cl.a.y - ny]
+    ];
+  }
+
+  function wallAABB(w) {
+    if (!isCenterlineWall(w)) {
+      return [
+        Math.min(w[0], w[2]), Math.min(w[1], w[3]),
+        Math.max(w[0], w[2]), Math.max(w[1], w[3])
+      ];
+    }
+    const poly = wallPolygon(w);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    poly.forEach(p => {
+      x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]);
+      x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+    });
+    return [x0, y0, x1, y1];
+  }
 
   /** 两点 + 真实长度 → 比例因子（真实 mm / 当前世界距离） */
   function calibFactor(a, b, realMm) {
     const d = Math.hypot(b.x - a.x, b.y - a.y);
     if (!(d > 1) || !(realMm > 0)) return null;
     return { factor: realMm / d, worldMm: d, realMm: +realMm, a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } };
+  }
+
+  /**
+   * 建筑面积反推比例：已知当前墙网/底图世界面积（mm²）与目标建筑面积（㎡）
+   * 返回缩放因子；原点由调用方定（通常取标定两点中点或外接矩形中心）。
+   */
+  function calibFactorFromArea(worldAreaMm2, areaM2) {
+    if (!(worldAreaMm2 > 1) || !(areaM2 > 0)) return null;
+    const targetMm2 = areaM2 * 1e6;
+    const f = Math.sqrt(targetMm2 / worldAreaMm2);
+    if (!(f > 0) || !isFinite(f)) return null;
+    return { factor: f, worldAreaMm2: worldAreaMm2, areaM2: +areaM2, mode: 'area' };
+  }
+
+  /** 多边形世界面积 mm²（有向绝对值） */
+  function polyAreaMm2(poly) {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length];
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return Math.abs(a) / 2;
   }
 
   /** 绕锚点缩放点 */
@@ -29,6 +132,11 @@
 
   function scaleWalls(walls, origin, f) {
     return walls.map(w => {
+      if (isCenterlineWall(w)) {
+        const p0 = scalePoint([w[0], w[1]], origin, f);
+        const p1 = scalePoint([w[2], w[3]], origin, f);
+        return [p0[0], p0[1], p1[0], p1[1], w[4] || 'n', Math.max(40, (w[5] || DEFAULT_THICK) * f)];
+      }
       const p0 = scalePoint([w[0], w[1]], origin, f);
       const p1 = scalePoint([w[2], w[3]], origin, f);
       return [p0[0], p0[1], p1[0], p1[1], w[4] || 'n'];
@@ -54,27 +162,37 @@
     });
   }
 
-  /** 正交墙：从中心线两点生成 AABB 墙体矩形 */
+  /**
+   * 由中心线两点生成墙段。始终写中心线格式（含 thick），支持斜墙。
+   * 正交 AABB 不再作为写入格式。
+   */
   function wallFromSegment(x0, y0, x1, y1, thick, kind) {
     thick = thick || DEFAULT_THICK;
     kind = kind || 'n';
     const dx = x1 - x0, dy = y1 - y0;
-    if (Math.hypot(dx, dy) < thick * 0.5) return null;
-    // 正交：主方向
-    if (Math.abs(dx) >= Math.abs(dy)) {
-      const xa = Math.min(x0, x1), xb = Math.max(x0, x1);
-      const y = (y0 + y1) / 2;
-      return [xa, y - thick / 2, xb, y + thick / 2, kind];
-    }
-    const ya = Math.min(y0, y1), yb = Math.max(y0, y1);
-    const x = (x0 + x1) / 2;
-    return [x - thick / 2, ya, x + thick / 2, yb, kind];
+    if (Math.hypot(dx, dy) < thick * 0.35) return null;
+    return [x0, y0, x1, y1, kind, thick];
   }
 
+  /** @deprecated 保留别名：历史调用 orthoSnap；现由 angleSnapPoint 替代 */
   function orthoSnap(a, b) {
+    return angleSnapPoint(a, b, 90, true);
+  }
+
+  /**
+   * 角度磁吸：将 b 投影到以 a 为原点、stepDeg 步进的射线，保持长度。
+   * enabled=false 时原样返回 b（可再被网格吸附）。
+   */
+  function angleSnapPoint(a, b, stepDeg, enabled) {
+    if (!enabled) return { x: b.x, y: b.y };
     const dx = b.x - a.x, dy = b.y - a.y;
-    if (Math.abs(dx) >= Math.abs(dy)) return { x: b.x, y: a.y };
-    return { x: a.x, y: b.y };
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return { x: b.x, y: b.y };
+    const step = ((stepDeg == null ? ANGLE_SNAP_DEG : stepDeg) * Math.PI) / 180;
+    if (!(step > 0)) return { x: b.x, y: b.y };
+    const ang = Math.atan2(dy, dx);
+    const snapped = Math.round(ang / step) * step;
+    return { x: a.x + Math.cos(snapped) * len, y: a.y + Math.sin(snapped) * len };
   }
 
   function centroid(poly) {
@@ -94,28 +212,115 @@
   }
 
   function polyAreaM2(poly) {
-    let a = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const p = poly[i], q = poly[(i + 1) % poly.length];
-      a += p[0] * q[1] - q[0] * p[1];
-    }
-    return Math.abs(a) / 2 / 1e6;
+    return polyAreaMm2(poly) / 1e6;
   }
 
   function bboxOfWalls(walls) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    walls.forEach(w => {
-      x0 = Math.min(x0, w[0], w[2]); y0 = Math.min(y0, w[1], w[3]);
-      x1 = Math.max(x1, w[0], w[2]); y1 = Math.max(y1, w[1], w[3]);
+    (walls || []).forEach(w => {
+      const bb = wallAABB(w);
+      x0 = Math.min(x0, bb[0]); y0 = Math.min(y0, bb[1]);
+      x1 = Math.max(x1, bb[2]); y1 = Math.max(y1, bb[3]);
     });
     if (!isFinite(x0)) return { x: -1850, y: -1750, w: 15600, h: 14100 };
     const pad = 800;
     return { x: x0 - pad, y: y0 - pad, w: (x1 - x0) + pad * 2, h: (y1 - y0) + pad * 2 };
   }
 
+  /** 点到线段距离 */
+  function distPointSeg(pt, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const L2 = dx * dx + dy * dy;
+    if (L2 < 1e-9) return Math.hypot(pt.x - a.x, pt.y - a.y);
+    let t = ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / L2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy));
+  }
+
+  /** 点到墙表面距离（墙内为 0）；兼容 AABB 与中心线 */
+  function distToWall(pt, w) {
+    const cl = wallCenterline(w);
+    const half = wallThickOf(w) / 2;
+    return Math.max(0, distPointSeg(pt, cl.a, cl.b) - half);
+  }
+
+  function findWallIndex(walls, pt, tol) {
+    tol = tol == null ? 120 : tol;
+    let best = -1, bestD = tol;
+    (walls || []).forEach((w, i) => {
+      const d = distToWall(pt, w);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
   /**
-   * 轴对齐墙 → 简易房间检测（栅格洪水填充）
-   * 返回 ROOMS 风格数组；失败时退回单一外轮廓房间。
+   * 找墙角：返回 { wallIndex, end:0|1, pt } 或 null
+   */
+  function findWallCorner(walls, pt, tol) {
+    tol = tol == null ? 140 : tol;
+    let best = null, bestD = tol;
+    (walls || []).forEach((w, i) => {
+      const cl = wallCenterline(w);
+      [[0, cl.a], [1, cl.b]].forEach(([end, p]) => {
+        const d = Math.hypot(pt.x - p.x, pt.y - p.y);
+        if (d < bestD) { bestD = d; best = { wallIndex: i, end: end, pt: { x: p.x, y: p.y } }; }
+      });
+    });
+    return best;
+  }
+
+  /**
+   * 移动墙角；同坐标（容差内）的相邻墙角一并移动。
+   * walls 就地修改，返回受影响的索引列表。
+   */
+  function moveSharedCorner(walls, wallIndex, end, newPt, joinTol) {
+    joinTol = joinTol == null ? CORNER_JOIN_TOL : joinTol;
+    if (!walls || !walls[wallIndex]) return [];
+    const cl0 = wallCenterline(walls[wallIndex]);
+    const old = end === 0 ? cl0.a : cl0.b;
+    const nx = newPt.x, ny = newPt.y;
+    const touched = [];
+    walls.forEach((w, i) => {
+      const cl = wallCenterline(w);
+      let changed = false;
+      let ax = cl.a.x, ay = cl.a.y, bx = cl.b.x, by = cl.b.y;
+      if (Math.hypot(ax - old.x, ay - old.y) <= joinTol) { ax = nx; ay = ny; changed = true; }
+      if (Math.hypot(bx - old.x, by - old.y) <= joinTol) { bx = nx; by = ny; changed = true; }
+      if (!changed) return;
+      touched.push(i);
+      const kind = wallKind(w);
+      const thick = wallThickOf(w);
+      if (isCenterlineWall(w)) {
+        walls[i] = [ax, ay, bx, by, kind, thick];
+      } else {
+        // 旧 AABB：仅当仍接近正交时写回 AABB；否则升级为中心线，避免 silently 掰回正交
+        const nearlyOrtho = Math.min(Math.abs(ax - bx), Math.abs(ay - by)) < 1e-3
+          || Math.abs(Math.abs(ax - bx) < 1 ? Math.PI / 2 : Math.atan2(by - ay, bx - ax)) % (Math.PI / 2) < 0.02
+          || Math.abs((Math.atan2(by - ay, bx - ax) % (Math.PI / 2))) < 0.02;
+        const ang = Math.atan2(by - ay, bx - ax);
+        const mod = Math.abs(ang % (Math.PI / 2));
+        const ortho = Math.min(mod, Math.PI / 2 - mod) < 0.05;
+        if (ortho) {
+          // 保持 AABB 体矩形
+          if (Math.abs(bx - ax) >= Math.abs(by - ay)) {
+            const y = (ay + by) / 2;
+            walls[i] = [Math.min(ax, bx), y - thick / 2, Math.max(ax, bx), y + thick / 2, kind];
+          } else {
+            const x = (ax + bx) / 2;
+            walls[i] = [x - thick / 2, Math.min(ay, by), x + thick / 2, Math.max(ay, by), kind];
+          }
+        } else {
+          walls[i] = [ax, ay, bx, by, kind, thick];
+        }
+      }
+    });
+    return touched;
+  }
+
+  /**
+   * 轴对齐 / 斜墙 → 简易房间检测（栅格洪水填充）
+   * 斜墙按厚度多边形涂进栅格，不再 silently 正交化。
    */
   function findRoomsFromWalls(walls, opts) {
     opts = opts || {};
@@ -127,19 +332,40 @@
     const bb = bboxOfWalls(walls);
     const cols = Math.max(4, Math.ceil(bb.w / cell));
     const rows = Math.max(4, Math.ceil(bb.h / cell));
-    // 0=空 1=墙 2+=房间标记
     const G = new Uint8Array(cols * rows);
     const ix = (x) => Math.max(0, Math.min(cols - 1, Math.floor((x - bb.x) / cell)));
     const iy = (y) => Math.max(0, Math.min(rows - 1, Math.floor((y - bb.y) / cell)));
     const at = (c, r) => r * cols + c;
 
+    function paintSeg(a, b, halfCells) {
+      const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (cell * 0.4)));
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const x = a.x + (b.x - a.x) * t;
+        const y = a.y + (b.y - a.y) * t;
+        const c0 = ix(x), r0 = iy(y);
+        for (let dr = -halfCells; dr <= halfCells; dr++) {
+          for (let dc = -halfCells; dc <= halfCells; dc++) {
+            const c = c0 + dc, r = r0 + dr;
+            if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+            G[at(c, r)] = 1;
+          }
+        }
+      }
+    }
+
     walls.forEach(w => {
-      const c0 = ix(Math.min(w[0], w[2])), c1 = ix(Math.max(w[0], w[2]));
-      const r0 = iy(Math.min(w[1], w[3])), r1 = iy(Math.max(w[1], w[3]));
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) G[at(c, r)] = 1;
+      const cl = wallCenterline(w);
+      const half = Math.max(0, Math.ceil((wallThickOf(w) / 2) / cell));
+      paintSeg(cl.a, cl.b, half);
+      // 也把四边形顶点连边涂一遍，减少斜墙缝隙
+      const poly = wallPolygon(w);
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i], q = poly[(i + 1) % poly.length];
+        paintSeg({ x: p[0], y: p[1] }, { x: q[0], y: q[1] }, 0);
+      }
     });
 
-    // 把边界一圈视为「室外」种子，先 flood 室外
     const outside = 255;
     const stack = [];
     function pushOut(c, r) {
@@ -161,7 +387,6 @@
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         if (G[at(c, r)] !== 0) continue;
-        // 新室内连通域
         const cells = [];
         const st = [c, r];
         G[at(c, r)] = mark;
@@ -177,7 +402,6 @@
         }
         mark++;
         if (cells.length < 4) continue;
-        // bbox 多边形（足够支撑面积与 3D 挤出；精细轮廓可后续增强）
         let minC = Infinity, minR = Infinity, maxC = -Infinity, maxR = -Infinity;
         cells.forEach(([cc, rr]) => {
           minC = Math.min(minC, cc); maxC = Math.max(maxC, cc);
@@ -188,8 +412,8 @@
         const x1 = bb.x + (maxC + 1) * cell;
         const y1 = bb.y + (maxR + 1) * cell;
         const poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-        const a = polyAreaM2(poly);
-        if (a < minArea) continue;
+        const area = polyAreaM2(poly);
+        if (area < minArea) continue;
         const id = 'room' + rooms.length;
         const name = '房间 ' + (rooms.length + 1);
         rooms.push({ id, name, poly, mat, at: centroid(poly), counted: true });
@@ -197,7 +421,6 @@
     }
 
     if (!rooms.length) {
-      // 退回：墙体外接矩形作单室
       const inner = {
         x: bb.x + 400, y: bb.y + 400,
         w: Math.max(1000, bb.w - 800), h: Math.max(1000, bb.h - 800)
@@ -250,7 +473,6 @@
     });
   }
 
-  /** 参照底图 placement {x,y,w,h} 绕锚点等比缩放，与墙体锁定 */
   function scalePlacement(pl, origin, f) {
     return {
       x: origin.x + (pl.x - origin.x) * f,
@@ -260,7 +482,6 @@
     };
   }
 
-  /** 参照底图：无标定时按 bounds 等比铺满；有 placement 时直接用 */
   function refPlacement(imgW, imgH, calib, bounds) {
     if (calib && calib.placement) {
       return {
@@ -268,7 +489,6 @@
         w: calib.placement.w, h: calib.placement.h
       };
     }
-    // 无标定时铺满 bounds（等比 letterbox）
     if (!imgW || !imgH) {
       return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h };
     }
@@ -285,93 +505,86 @@
     return { x, y, w, h };
   }
 
-
-  /** 点到 AABB 墙的距离（在墙内为 0） */
-  function distToWall(pt, w) {
-    const cx = Math.max(w[0], Math.min(pt.x, w[2]));
-    const cy = Math.max(w[1], Math.min(pt.y, w[3]));
-    return Math.hypot(pt.x - cx, pt.y - cy);
-  }
-
-  function findWallIndex(walls, pt, tol) {
-    tol = tol == null ? 120 : tol;
-    let best = -1, bestD = tol;
-    (walls || []).forEach((w, i) => {
-      const d = distToWall(pt, w);
-      if (d < bestD) { bestD = d; best = i; }
-    });
-    return best;
-  }
-
-  function wallIsHorizontal(w) {
-    return (w[2] - w[0]) >= (w[3] - w[1]);
-  }
-
-  /** 墙段沿长边的外沿长度（mm） */
-  function wallSegLen(w) {
-    return wallIsHorizontal(w) ? (w[2] - w[0]) : (w[3] - w[1]);
-  }
-
   /**
-   * 在墙上放置门：默认净宽 900mm。
-   * asEntry=true 时标记入户门。
+   * 在墙上放置门：默认净宽 900mm。斜墙时沿中心线方向开洞。
    */
   function makeDoorOnWall(wall, pt, asEntry) {
-    const [x0, y0, x1, y1] = wall;
-    const horiz = wallIsHorizontal(wall);
-    const len = 900;
-    if (horiz) {
-      let cx = snap(pt.x, 10);
-      const half = len / 2;
-      cx = Math.max(x0 + half, Math.min(x1 - half, cx));
-      if (x1 - x0 < len + 20) cx = (x0 + x1) / 2;
-      const L = Math.min(len, Math.max(600, x1 - x0 - 40));
-      const rect = [cx - L / 2, y0, cx + L / 2, y1];
+    const cl = wallCenterline(wall);
+    const dx = cl.b.x - cl.a.x, dy = cl.b.y - cl.a.y;
+    const Lseg = Math.hypot(dx, dy) || 1;
+    const tx = dx / Lseg, ty = dy / Lseg;
+    const nx = -ty, ny = tx;
+    const thick = wallThickOf(wall);
+    let len = 900;
+    // 投影到中心线
+    let t = ((pt.x - cl.a.x) * tx + (pt.y - cl.a.y) * ty);
+    t = Math.max(len / 2, Math.min(Lseg - len / 2, t));
+    if (Lseg < len + 40) { len = Math.max(600, Lseg - 40); t = Lseg / 2; }
+    const cx = cl.a.x + tx * t, cy = cl.a.y + ty * t;
+    const hx = cx - tx * (len / 2), hy = cy - ty * (len / 2);
+    const halfT = thick / 2;
+    const rect = [
+      Math.min(hx - nx * halfT, hx + tx * len - nx * halfT, hx + nx * halfT, hx + tx * len + nx * halfT),
+      Math.min(hy - ny * halfT, hy + ty * len - ny * halfT, hy + ny * halfT, hy + ty * len + ny * halfT),
+      Math.max(hx - nx * halfT, hx + tx * len - nx * halfT, hx + nx * halfT, hx + tx * len + nx * halfT),
+      Math.max(hy - ny * halfT, hy + ty * len - ny * halfT, hy + ny * halfT, hy + ty * len + ny * halfT)
+    ];
+    // 正交墙保持旧 rect 精度（与历史样板一致）
+    if (!isCenterlineWall(wall) && (Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6)) {
+      const [x0, y0, x1, y1] = [Math.min(wall[0], wall[2]), Math.min(wall[1], wall[3]), Math.max(wall[0], wall[2]), Math.max(wall[1], wall[3])];
+      if (Math.abs(dy) < 1e-6) {
+        return {
+          name: asEntry ? '入户门' : '门',
+          rect: [cx - len / 2, y0, cx + len / 2, y1],
+          h: [cx - len / 2, (y0 + y1) / 2],
+          c: [1, 0], o: [0, 1], len: len, entry: !!asEntry
+        };
+      }
       return {
         name: asEntry ? '入户门' : '门',
-        rect: rect,
-        h: [cx - L / 2, (y0 + y1) / 2],
-        c: [1, 0],
-        o: [0, 1],
-        len: L,
-        entry: !!asEntry
+        rect: [x0, cy - len / 2, x1, cy + len / 2],
+        h: [(x0 + x1) / 2, cy + len / 2],
+        c: [0, -1], o: [1, 0], len: len, entry: !!asEntry
       };
     }
-    let cy = snap(pt.y, 10);
-    const half = len / 2;
-    cy = Math.max(y0 + half, Math.min(y1 - half, cy));
-    if (y1 - y0 < len + 20) cy = (y0 + y1) / 2;
-    const L = Math.min(len, Math.max(600, y1 - y0 - 40));
-    const rect = [x0, cy - L / 2, x1, cy + L / 2];
     return {
       name: asEntry ? '入户门' : '门',
       rect: rect,
-      h: [(x0 + x1) / 2, cy + L / 2],
-      c: [0, -1],
-      o: [1, 0],
-      len: L,
+      h: [hx, hy],
+      c: [tx, ty],
+      o: [nx, ny],
+      len: len,
       entry: !!asEntry
     };
   }
 
-  /** 在墙上放置窗：默认净宽 1200mm */
   function makeWinOnWall(wall, pt) {
-    const [x0, y0, x1, y1] = wall;
-    const horiz = wallIsHorizontal(wall);
-    const len = 1200;
-    if (horiz) {
-      let cx = snap(pt.x, 10);
-      const L = Math.min(len, Math.max(400, x1 - x0 - 40));
-      cx = Math.max(x0 + L / 2, Math.min(x1 - L / 2, cx));
-      return [cx - L / 2, y0, cx + L / 2, y1];
+    const cl = wallCenterline(wall);
+    const dx = cl.b.x - cl.a.x, dy = cl.b.y - cl.a.y;
+    const Lseg = Math.hypot(dx, dy) || 1;
+    const tx = dx / Lseg, ty = dy / Lseg;
+    const thick = wallThickOf(wall);
+    let len = 1200;
+    let t = ((pt.x - cl.a.x) * tx + (pt.y - cl.a.y) * ty);
+    t = Math.max(len / 2, Math.min(Lseg - len / 2, t));
+    if (Lseg < len + 40) { len = Math.max(400, Lseg - 40); t = Lseg / 2; }
+    const cx = cl.a.x + tx * t, cy = cl.a.y + ty * t;
+    if (!isCenterlineWall(wall) && (Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6)) {
+      const [x0, y0, x1, y1] = [Math.min(wall[0], wall[2]), Math.min(wall[1], wall[3]), Math.max(wall[0], wall[2]), Math.max(wall[1], wall[3])];
+      if (Math.abs(dy) < 1e-6) return [cx - len / 2, y0, cx + len / 2, y1];
+      return [x0, cy - len / 2, x1, cy + len / 2];
     }
-    let cy = snap(pt.y, 10);
-    const L = Math.min(len, Math.max(400, y1 - y0 - 40));
-    cy = Math.max(y0 + L / 2, Math.min(y1 - L / 2, cy));
-    return [x0, cy - L / 2, x1, cy + L / 2];
+    const nx = -ty * (thick / 2), ny = tx * (thick / 2);
+    const hx0 = cx - tx * (len / 2), hy0 = cy - ty * (len / 2);
+    const hx1 = cx + tx * (len / 2), hy1 = cy + ty * (len / 2);
+    return [
+      Math.min(hx0 + nx, hx0 - nx, hx1 + nx, hx1 - nx),
+      Math.min(hy0 + ny, hy0 - ny, hy1 + ny, hy1 - ny),
+      Math.max(hx0 + nx, hx0 - nx, hx1 + nx, hx1 - nx),
+      Math.max(hy0 + ny, hy0 - ny, hy1 + ny, hy1 - ny)
+    ];
   }
 
-  /** 序列化进 huxing-design-v1 / pipeline */
   function packGeometry(walls, rooms, meta) {
     const out = {
       source: (meta && meta.source) || 'custom',
@@ -379,7 +592,8 @@
       walls: cloneWalls(walls),
       rooms: cloneRooms(rooms),
       calib: meta && meta.calib ? Object.assign({}, meta.calib) : null,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      wallSchema: 'centerline-v1' // 文档标记；旧档无此字段仍可读
     };
     if (meta && meta.openings) {
       out.openings = {
@@ -399,7 +613,6 @@
   }
 
   function unpackGeometry(g) {
-    // 允许空墙（空白临摹）
     if (!g || !Array.isArray(g.walls)) return null;
     return {
       walls: cloneWalls(g.walls),
@@ -416,21 +629,24 @@
       refPlacement: g.refPlacement ? {
         x: g.refPlacement.x, y: g.refPlacement.y,
         w: g.refPlacement.w, h: g.refPlacement.h
-      } : null
+      } : null,
+      wallSchema: g.wallSchema || null
     };
   }
 
   global.WallWorkbench = {
-    DEFAULT_THICK, GRID,
+    DEFAULT_THICK, GRID, ANGLE_SNAP_DEG, CORNER_JOIN_TOL,
     cloneWalls, cloneRooms,
     cloneWins, cloneDoors, cloneSlides,
-    snap, calibFactor,
+    snap, calibFactor, calibFactorFromArea, polyAreaMm2,
     scaleWalls, scaleRooms, scaleFurniture, scalePoint,
     scaleRect4, scaleWins, scaleDoors, scaleSlides, scalePlacement,
-    wallFromSegment, orthoSnap,
+    wallFromSegment, orthoSnap, angleSnapPoint,
+    isCenterlineWall, wallThickOf, wallCenterline, wallPolygon, wallAABB, wallKind,
     centroid, polyAreaM2, bboxOfWalls,
     findRoomsFromWalls, refPlacement,
-    distToWall, findWallIndex, wallIsHorizontal, wallSegLen,
+    distToWall, findWallIndex, findWallCorner, moveSharedCorner,
+    wallIsHorizontal, wallSegLen,
     makeDoorOnWall, makeWinOnWall,
     packGeometry, unpackGeometry
   };

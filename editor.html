@@ -57,9 +57,14 @@ main{position:relative;overflow:hidden;background:var(--paper)}
 #plan.panning{cursor:grabbing}
 #plan.tool-measure{cursor:crosshair}
 #plan .wall{pointer-events:none}
-#plan.tool-demolish .wall,#plan.tool-erasewall .wall{pointer-events:all;cursor:pointer}
+#plan.tool-demolish .wall,#plan.tool-erasewall .wall,#plan.tool-select .wall{pointer-events:all;cursor:pointer}
 #plan.tool-demolish .wall:hover{fill:#d9894f}
 #plan.tool-erasewall .wall:hover{fill:#c45c26}
+#plan.tool-select .wall:hover{filter:brightness(.92)}
+.wall-corner{fill:#fff;stroke:#b5653a;stroke-width:2;vector-effect:non-scaling-stroke;cursor:grab;pointer-events:all}
+.wall-preview-poly{fill:rgba(42,92,79,.28);stroke:#2a5c4f;stroke-width:1.5;vector-effect:non-scaling-stroke;pointer-events:none}
+.wall-len-label{fill:#2a5c4f;font-weight:600;paint-order:stroke;stroke:#fff;stroke-width:4;pointer-events:none}
+.wb-anglesnap.on{background:#2a5c4f;color:#fff}
 #plan.tool-select .room:hover{opacity:.82}
 #plan .furn{cursor:move}
 @media (hover:hover){#plan .furn:hover{filter:drop-shadow(0 0 2px rgba(181,101,58,.7))}}
@@ -266,9 +271,10 @@ body.walking #walkExit{display:block}
     <span class="sep"></span>
     <div class="wb-tools" id="wbTools" title="临摹墙体">
       <button class="btn primary" type="button" id="wbTraceMine" title="清空样板墙，对着底图空白临摹">按我的图临摹</button>
-      <button class="btn" type="button" data-wb="calibrate" title="两点标定真实长度">标定比例</button>
-      <button class="btn" type="button" data-wb="drawwall" title="正交画墙（点击两点）">画墙</button>
-      <button class="btn" type="button" data-wb="erasewall" title="点击删除墙段">删墙</button>
+      <button class="btn" type="button" data-wb="calibrate" title="两点标定，或用建筑面积㎡反推比例">标定比例</button>
+      <button class="btn" type="button" data-wb="drawwall" title="连续折线画墙：点击继续，回车/双击/右键结束；默认15°磁吸">画墙</button>
+      <button class="btn" type="button" id="wbAngleSnap" title="角度磁吸（默认15°；关闭或按住Shift=自由斜墙）">15°磁吸</button>
+      <button class="btn" type="button" data-wb="erasewall" title="点击删除墙段（几何命中）">删墙</button>
       <button class="btn" type="button" data-wb="placeentry" title="在墙上点击放置入户门">入户门</button>
       <button class="btn" type="button" data-wb="placedoor" title="在墙上点击放置门">放门</button>
       <button class="btn" type="button" data-wb="placewin" title="在墙上点击放置窗">放窗</button>
@@ -390,13 +396,16 @@ body.walking #walkExit{display:block}
     <div class="scalebar" id="scalebar"><span id="sbText">1 m</span><div class="bar" id="sbBar"></div></div>
     <div class="modehint" id="modehint"></div>
     <div id="calibPrompt">
-      <div><b>比例尺标定</b> · 已选两点，输入这段的真实长度</div>
+      <div><b>比例尺标定</b> · 建议量外墙最长边；无尺寸可改用建筑面积</div>
       <div style="margin-top:8px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+        <label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="calibMode" id="calibModeLen" value="len" checked> 两点长度</label>
         <label>长度 <input id="calibLen" type="number" min="100" step="10" value="" placeholder="例如 3600"> mm</label>
+        <label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="calibMode" id="calibModeArea" value="area"> 建筑面积</label>
+        <label>面积 <input id="calibArea" type="number" min="5" step="0.1" value="" placeholder="例如 98"> ㎡</label>
         <button class="btn primary" type="button" id="calibApply">应用</button>
         <button class="btn" type="button" id="calibCancel">取消</button>
       </div>
-      <div class="muted" style="margin-top:6px;font-size:11px;color:#6b6560">标定后世界坐标按真实毫米缩放；建议先标定再画墙。</div>
+      <div class="muted" style="margin-top:6px;font-size:11px;color:#6b6560">长度模式：先点两端再填 mm。面积模式：可直接填㎡（按当前底图外接框反推）；若已点两端则按两点矩形面积反推。</div>
     </div>
     <div id="fab"></div>
   </main>
@@ -831,7 +840,7 @@ const svg = $('#plan');
 /* ======================= 状态 / 历史 / 存储 ======================= */
 let state = load() || defaultState();
 const ui = {tool:'select', sel:null, mA:null, mCur:null, wbA:null, wbCur:null, calibA:null, calibB:null,
-  refOnTop:true, lastStagePt:null,
+  refOnTop:true, lastStagePt:null, angleSnap:true,
   layers:{dims:true, labels:true, furn:true, grid:false, bearing:false, wallSnap:true}};
 let view = {x0:0, y0:0, s:.06};
 const undoStack = [], redoStack = [];
@@ -871,7 +880,10 @@ const bbox = poly => { const xs = poly.map(p=>p[0]), ys = poly.map(p=>p[1]); ret
 function aabb(f){ const a = f.rot*Math.PI/180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a)); return {hw:f.w/2*c + f.d/2*s, hh:f.w/2*s + f.d/2*c}; }
 const fmt = (n, d=2) => n.toFixed(d);
 const norm = a => ((Math.round(a) % 360) + 360) % 360;
-function snapRects(){ return WALLS.filter((w,i) => !state.demolished.includes('w'+i)).concat(WINS); }
+function snapRects(){
+  const walls = WALLS.filter((w,i) => !state.demolished.includes('w'+i)).map(w => WallWorkbench.wallAABB(w));
+  return walls.concat(WINS);
+}
 
 /* ======================= 颜色 / 材质图案 ======================= */
 function hex2rgb(h){ h = h.replace('#',''); if (h.length===3) h = h.split('').map(c=>c+c).join(''); const n = parseInt(h,16); return [(n>>16)&255,(n>>8)&255,n&255]; }
@@ -1049,11 +1061,15 @@ function renderFurn(){
 
 function renderWalls(){
   $('#gWalls').innerHTML = WALLS.map((w,i) => {
-    const [x0,y0,x1,y1,k] = w, id = 'w'+i, dem = state.demolished.includes(id);
+    const k = w[4] || 'n', id = 'w'+i, dem = state.demolished.includes(id);
     let fill = k==='b' ? (ui.layers.bearing ? '#b8412c' : '#26241f') : k==='low' ? '#e9e3d8' : k==='e' ? '#8f897d' : '#a7a195';
     let ex = k==='low' ? 'stroke="#8f897d" stroke-width="1" vector-effect="non-scaling-stroke"' : '';
     if (dem){ fill = 'rgba(198,91,58,.12)'; ex = 'stroke="#c65b3a" stroke-width="1.2" stroke-dasharray="5 3" vector-effect="non-scaling-stroke"'; }
-    return `<rect class="wall" data-wall="${id}" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" fill="${fill}" ${ex}/>`;
+    const poly = WallWorkbench.wallPolygon(w);
+    const pts = poly.map(p => p.join(',')).join(' ');
+    const sel = ui.sel?.kind === 'wall' && ui.sel.id === id;
+    if (sel && !dem) ex = (ex ? ex + ' ' : '') + 'stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"';
+    return `<polygon class="wall" data-wall="${id}" points="${pts}" fill="${fill}" ${ex}/>`;
   }).join('');
 }
 
@@ -1132,26 +1148,27 @@ function renderDims(){
   // 偏向户型内侧放置，并避开参照图顶部说明文字带，减少与底图 caption 重叠
   let s = '';
   let cx = 0, cy = 0, n = 0;
-  WALLS.forEach(w => { cx += (w[0] + w[2]) / 2; cy += (w[1] + w[3]) / 2; n++; });
+  WALLS.forEach(w => {
+    const cl = WallWorkbench.wallCenterline(w);
+    cx += (cl.a.x + cl.b.x) / 2; cy += (cl.a.y + cl.b.y) / 2; n++;
+  });
   if (n) { cx /= n; cy /= n; }
   const refTopBand = (REF_PLACEMENT?.y ?? -2000) + Math.min(1100, (REF_PLACEMENT?.h ?? 14000) * 0.12);
   const txtHi = (x,y,v,rot) => `<text x="${x}" y="${y}" font-size="${v<400?140:180}" text-anchor="middle" fill="${DC}" font-weight="600"
     stroke="#fffdf8" stroke-width="28" paint-order="stroke" ${rot?`transform="rotate(-90 ${x} ${y})"`:''}>${v}</text>`;
   WALLS.forEach(w => {
-    const [x0,y0,x1,y1] = w;
+    const cl = WallWorkbench.wallCenterline(w);
     const horiz = WallWorkbench.wallIsHorizontal(w);
     const len = Math.round(WallWorkbench.wallSegLen(w));
     if (len < 80) return;
-    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const mx = (cl.a.x + cl.b.x) / 2, my = (cl.a.y + cl.b.y) / 2;
     const off = 320;
     let lx, ly, rot = false;
     if (horiz) {
-      // 墙在重心上方 → 标签放下方（内侧）；否则放上方
       const inward = (my <= cy) ? 1 : -1;
       ly = my + inward * off;
       lx = mx;
-      // 若仍落在参照图顶部 caption 带内，强制压到墙内侧下方
-      if (ly < refTopBand) ly = Math.max(y0, y1) + off;
+      if (ly < refTopBand) ly = Math.max(cl.a.y, cl.b.y) + off;
     } else {
       const inward = (mx <= cx) ? 1 : -1;
       lx = mx + inward * off;
@@ -1207,7 +1224,16 @@ function renderSel(){
     }
   } else if (ui.sel?.kind === 'room'){
     const r = ROOMS.find(r => r.id === ui.sel.id);
-    s += `<polygon points="${r.poly.map(p=>p.join(',')).join(' ')}" fill="rgba(181,101,58,.08)" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke" pointer-events="none"/>`;
+    if (r) s += `<polygon points="${r.poly.map(p=>p.join(',')).join(' ')}" fill="rgba(181,101,58,.08)" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke" pointer-events="none"/>`;
+  } else if (ui.sel?.kind === 'wall'){
+    const idx = +String(ui.sel.id).slice(1);
+    const w = WALLS[idx];
+    if (w){
+      const cl = WallWorkbench.wallCenterline(w);
+      const r = Math.max(50, 14/view.s);
+      s += `<circle class="wall-corner" data-wall-corner="0" data-wall="${ui.sel.id}" cx="${cl.a.x}" cy="${cl.a.y}" r="${r}"><title>${tr('拖角点','Drag corner')}</title></circle>`;
+      s += `<circle class="wall-corner" data-wall-corner="1" data-wall="${ui.sel.id}" cx="${cl.b.x}" cy="${cl.b.y}" r="${r}"><title>${tr('拖角点','Drag corner')}</title></circle>`;
+    }
   }
   $('#gSel').innerHTML = s;
 }
@@ -1218,7 +1244,15 @@ function renderWbPreview(){
   let s = '';
   if (ui.tool === 'drawwall' && ui.wbA && ui.wbCur){
     const w = WallWorkbench.wallFromSegment(ui.wbA.x, ui.wbA.y, ui.wbCur.x, ui.wbCur.y, WallWorkbench.DEFAULT_THICK, 'n');
-    if (w) s += `<rect class="wall-preview" x="${w[0]}" y="${w[1]}" width="${w[2]-w[0]}" height="${w[3]-w[1]}"/>`;
+    if (w){
+      const pts = WallWorkbench.wallPolygon(w).map(p => p.join(',')).join(' ');
+      s += `<polygon class="wall-preview-poly" points="${pts}"/>`;
+      const len = Math.round(WallWorkbench.wallSegLen(w));
+      const mx = (ui.wbA.x + ui.wbCur.x) / 2, my = (ui.wbA.y + ui.wbCur.y) / 2;
+      const fs = Math.max(140, 14/view.s);
+      s += `<text class="wall-len-label" x="${mx}" y="${my - 8/view.s}" font-size="${fs}" text-anchor="middle">${len} mm</text>`;
+    }
+    s += `<circle cx="${ui.wbA.x}" cy="${ui.wbA.y}" r="${Math.max(35, 10/view.s)}" fill="#2a5c4f"/>`;
   }
   if (ui.calibA){
     const b = ui.calibB || ui.wbCur;
@@ -1269,8 +1303,8 @@ function overviewPanel(){
   let cost = 0;
   const matRows = Object.entries(byMat).map(([m,a]) => { const mat = MATS[m]||MATS.wood; const c = a*mat.price*1.05; cost += c;
     return `<tr><td><span class="sw" style="background:${mat.sw}"></span>${nm(mat.name)}</td><td class="r">${fmt(a,1)} m²</td><td class="r">¥${Math.round(c).toLocaleString()}</td></tr>`; }).join('');
-  const dem = state.demolished.map(id => WALLS[+id.slice(1)]);
-  const demLen = dem.reduce((a,w) => a + Math.max(w[2]-w[0], w[3]-w[1]), 0) / 1000;
+  const dem = state.demolished.map(id => WALLS[+id.slice(1)]).filter(Boolean);
+  const demLen = dem.reduce((a,w) => a + WallWorkbench.wallSegLen(w), 0) / 1000;
   return `
   <section><h3>${tr('房间面积','Room Areas')} <small>${tr('点击查看 / 更换地面','Click to view / change flooring')}</small></h3>
     <table>${rows}</table>
@@ -1439,7 +1473,24 @@ function bindFurnPanel(f){
 /* ======================= 操作 ======================= */
 function select(sel){ ui.sel = sel; renderSel(); renderPanel(); }
 function rotateSel(d){ if (ui.sel?.kind==='furn') mutate(() => { const f = getF(ui.sel.id); f.rot = norm(f.rot + d); }); }
-function deleteSel(){ if (ui.sel?.kind==='furn'){ const id = ui.sel.id; ui.sel = null; mutate(() => state.furniture = state.furniture.filter(f => f.id !== id)); } }
+function deleteSel(){
+  if (ui.sel?.kind==='furn'){
+    const id = ui.sel.id; ui.sel = null;
+    mutate(() => state.furniture = state.furniture.filter(f => f.id !== id));
+  } else if (ui.sel?.kind==='wall'){
+    const idx = +String(ui.sel.id).slice(1);
+    if (!(idx >= 0) || idx >= WALLS.length) return;
+    ui.sel = null;
+    mutate(() => {
+      WALLS.splice(idx, 1);
+      state.demolished = [];
+      GEOM_SOURCE = 'custom';
+      persistGeometry();
+    });
+    try { window.View3D?.sync(true); } catch(e) {}
+    toast(tr('已删除墙段', 'Wall segment removed'));
+  }
+}
 function duplicateSel(){
   if (ui.sel?.kind !== 'furn') return;
   const f = getF(ui.sel.id), n = {...f, id:uid(), cx:f.cx+200, cy:f.cy+200};
@@ -1480,21 +1531,48 @@ function setTool(t){
   ui.wbA = null; ui.wbCur = null; ui.calibA = null; ui.calibB = null;
   const prompt = document.getElementById('calibPrompt');
   if (prompt && t !== 'calibrate') prompt.classList.remove('show');
+  // 面积标定可无两点也打开面板
+  if (t === 'calibrate') prompt?.classList.add('show');
   svg.setAttribute('class', 'tool-' + t);
   document.querySelectorAll('#tools .btn').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   document.querySelectorAll('#wbTools [data-wb]').forEach(b => b.classList.toggle('on', b.dataset.wb === t));
+  syncAngleSnapBtn();
   syncModeHint();
   renderMeasure();
   renderWbPreview();
+}
+function syncAngleSnapBtn(){
+  const b = document.getElementById('wbAngleSnap');
+  if (!b) return;
+  b.classList.toggle('on', !!ui.angleSnap);
+  b.classList.toggle('wb-anglesnap', true);
+}
+function wallDrawSnapEnabled(shiftKey){
+  // 默认 15° 磁吸；Shift 或工具栏关闭 → 自由角度（可斜墙）
+  return !!ui.angleSnap && !shiftKey;
+}
+function snapWallPoint(from, raw, shiftKey){
+  const g = WallWorkbench.GRID;
+  let p = {x: WallWorkbench.snap(raw.x, g), y: WallWorkbench.snap(raw.y, g)};
+  if (from) p = WallWorkbench.angleSnapPoint(from, p, WallWorkbench.ANGLE_SNAP_DEG, wallDrawSnapEnabled(shiftKey));
+  // 吸附到已有墙角
+  const corner = WallWorkbench.findWallCorner(WALLS, p, 100);
+  if (corner) return {x: WallWorkbench.snap(corner.pt.x, g), y: WallWorkbench.snap(corner.pt.y, g)};
+  return p;
+}
+function finishDrawWallChain(){
+  ui.wbA = null; ui.wbCur = null;
+  renderWbPreview();
+  toast(tr('折线结束 · 闭合后点「识别房间」', 'Polyline finished · Detect rooms when closed'));
 }
 function syncModeHint(){
   const hints = {select:'',
     measure:COARSE ? tr('按住拖出测量线，或依次点两点 · 靠近墙面自动吸附 · 点「选择」退出', 'Hold and drag a line, or tap two points · snaps to walls · tap "Select" to exit')
       : tr('点击两点（或按住拖动）测量距离 · 靠近墙面自动吸附 · Shift 锁定水平/垂直 · Esc 取消', 'Click two points (or drag) to measure · snaps to walls · Shift locks horizontal/vertical · Esc cancels'),
     demolish:tr('点击灰色非承重墙标记拆除，再次点击恢复 · 黑色承重墙不可拆', 'Click a grey non-bearing wall to remove it, click again to restore · black bearing walls cannot be removed'),
-    calibrate:tr('在参照图上依次点击已知边长的两个端点，然后输入真实毫米长度', 'Click two endpoints of a known edge on the reference plan, then enter its real length in mm'),
-    drawwall:tr('正交画墙：点击起点与终点（自动水平/垂直）· Esc 取消当前段 · 画完后点「识别房间」', 'Ortho walls: click start and end (auto H/V) · Esc cancels · then tap Detect rooms'),
-    erasewall:tr('点击一段墙体删除 · 删完后请「识别房间」以更新面积与造价', 'Click a wall segment to delete · then Detect rooms to refresh area and cost'),
+    calibrate:tr('标定：点外墙长边两端并输入真实 mm；或改选「建筑面积」填㎡反推比例', 'Calibrate: click two ends of a long exterior wall + real mm; or use building area m²'),
+    drawwall:tr('连续折线画墙：点一下继续下一段 · 回车/双击/右键结束 · 默认15°磁吸（Shift或关磁吸=斜墙）· Esc 取消', 'Polyline walls: click to continue · Enter/double-click/right-click ends · 15° snap (Shift/off = free angle)'),
+    erasewall:tr('点击墙段删除（几何命中）· 删完后请「识别房间」', 'Click a wall to delete (geometric hit) · then Detect rooms'),
     placeentry:tr('点击墙体放置入户门（漫游入口）· Esc 退出', 'Click a wall to place the entry door · Esc exits'),
     placedoor:tr('点击墙体放置门 · Esc 退出', 'Click a wall to place a door · Esc exits'),
     placewin:tr('点击墙体放置窗 · Esc 退出', 'Click a wall to place a window · Esc exits')};
@@ -1567,6 +1645,19 @@ function pinchInfo(){
 function endDrag(cancel){
   const d = drag; drag = null; svg.classList.remove('panning');
   if (!d) return;
+  if (d.kind === 'wall-corner'){
+    if (d.moved && !cancel){
+      // 拖动中已就地改 WALLS；用 pointerdown 时的 before 入撤销栈，勿走下方 commit(before) 回滚
+      if (d.before) commit(d.before);
+      else persistGeometry();
+      renderWalls(); renderSel(); renderDims(); renderOpenings();
+      try { window.View3D?.sync(true); } catch(e) {}
+    } else if (cancel && d.before){
+      restoreState(JSON.parse(d.before));
+    }
+    return;
+  }
+  if (d.kind === 'drawwall') return; // 折线状态由 ui.wbA 保持
   if (d.kind === 'measure'){
     if (cancel){ ui.mA = ui.mCur = null; renderMeasure(); return; }
     if (d.moved && ui.mA && ui.mCur && Math.hypot(ui.mCur.x-ui.mA.x, ui.mCur.y-ui.mA.y) > 20){
@@ -1616,36 +1707,43 @@ svg.addEventListener('pointerdown', e => {
     renderWbPreview(); return;
   }
   if (ui.tool === 'drawwall'){
-    const raw = {x: WallWorkbench.snap(p.x, WallWorkbench.GRID), y: WallWorkbench.snap(p.y, WallWorkbench.GRID)};
+    // 连续折线：点一下起点，再点继续出下一段；不在此结束（回车/双击/右键结束）
+    const raw = snapWallPoint(ui.wbA, p, e.shiftKey);
     if (!ui.wbA){
       ui.wbA = raw; ui.wbCur = raw;
       drag = {kind:'drawwall', sx:e.clientX, sy:e.clientY, moved:false};
       svg.setPointerCapture(e.pointerId);
       renderWbPreview(); return;
     }
-    const b = WallWorkbench.orthoSnap(ui.wbA, raw);
+    const b = raw;
+    if (Math.hypot(b.x - ui.wbA.x, b.y - ui.wbA.y) < WallWorkbench.DEFAULT_THICK * 0.35){
+      toast(tr('段太短，继续移动再点', 'Segment too short — move farther'));
+      return;
+    }
     const w = WallWorkbench.wallFromSegment(ui.wbA.x, ui.wbA.y, b.x, b.y, WallWorkbench.DEFAULT_THICK, 'n');
-    ui.wbA = null; ui.wbCur = null;
     if (w){
       mutate(() => {
-        // 在样板上增改墙 → 标记为 custom，保留现有墙作起步（空白临摹请用「清空自建墙」）
         if (GEOM_SOURCE !== 'custom') GEOM_SOURCE = 'custom';
         WALLS.push(w);
         persistGeometry();
       });
-      toast(tr('已添加墙段 · 闭合后点「识别房间」', 'Wall added · Detect rooms when the loop is closed'));
+      // 下一段从本段终点继续
+      ui.wbA = {x: b.x, y: b.y}; ui.wbCur = {x: b.x, y: b.y};
+      toast(tr('已加一段 · 继续点下一段，回车/双击/右键结束', 'Segment added · click next, Enter/dblclick/right-click ends'));
     }
     renderWbPreview(); return;
   }
-  if (ui.tool === 'erasewall' && t.closest('[data-wall]')){
-    const id = t.closest('[data-wall]').dataset.wall;
-    const idx = +id.slice(1);
-    if (!Number.isFinite(idx) || idx < 0 || idx >= WALLS.length) return;
+  if (ui.tool === 'erasewall'){
+    let idx = -1;
+    const el = t.closest('[data-wall]');
+    if (el) idx = +el.dataset.wall.slice(1);
+    if (!(idx >= 0)) idx = WallWorkbench.findWallIndex(WALLS, p, 160);
+    if (!(idx >= 0) || idx >= WALLS.length){ toast(tr('未命中墙段', 'No wall hit')); return; }
     mutate(() => {
       WALLS.splice(idx, 1);
-      // demolished 索引会错位：清空拆除标记
       state.demolished = [];
       GEOM_SOURCE = 'custom';
+      if (ui.sel?.kind === 'wall') ui.sel = null;
       persistGeometry();
     });
     try { window.View3D?.sync(true); } catch(e) {}
@@ -1680,7 +1778,14 @@ svg.addEventListener('pointerdown', e => {
     return;
   }
   const h = t.closest('[data-handle]');
-  if (h && ui.sel?.kind === 'furn'){
+  const cornerEl = t.closest('[data-wall-corner]');
+  if (cornerEl && ui.tool === 'select'){
+    const wid = cornerEl.dataset.wall;
+    const end = +cornerEl.dataset.wallCorner;
+    const idx = +String(wid).slice(1);
+    select({kind:'wall', id:wid});
+    drag = {kind:'wall-corner', wallIndex:idx, end, sx:e.clientX, sy:e.clientY, before:snap(), moved:false};
+  } else if (h && ui.sel?.kind === 'furn'){
     drag = {kind:h.dataset.handle, id:ui.sel.id, sx:e.clientX, sy:e.clientY, before:snap(), moved:false};
   } else if (ui.tool === 'demolish' && t.closest('[data-wall]')){
     toggleWall(t.closest('[data-wall]').dataset.wall); return;
@@ -1688,6 +1793,15 @@ svg.addEventListener('pointerdown', e => {
     const f = getF(t.closest('[data-fid]').dataset.fid);
     if (ui.sel?.id !== f.id) select({kind:'furn', id:f.id});
     drag = {kind:'move', id:f.id, sx:e.clientX, sy:e.clientY, ox:p.x-f.cx, oy:p.y-f.cy, before:snap(), moved:false};
+  } else if (ui.tool === 'select' && (t.closest('[data-wall]') || WallWorkbench.findWallIndex(WALLS, p, 120) >= 0)){
+    let wid = t.closest('[data-wall]')?.dataset.wall;
+    if (!wid){
+      const wi = WallWorkbench.findWallIndex(WALLS, p, 120);
+      if (wi >= 0) wid = 'w' + wi;
+    }
+    if (wid){ select({kind:'wall', id:wid}); return; }
+    const room = t.closest('[data-room]');
+    drag = {kind:'pan', sx:e.clientX, sy:e.clientY, x0:view.x0, y0:view.y0, room:room && room.dataset.room, moved:false};
   } else {
     const room = t.closest('[data-room]');
     drag = {kind:'pan', sx:e.clientX, sy:e.clientY, x0:view.x0, y0:view.y0, room:room && room.dataset.room, moved:false};
@@ -1711,8 +1825,7 @@ svg.addEventListener('pointermove', e => {
     $('#hover').innerHTML = room ? `<b>${esc(state.rooms[room.dataset.room].name)}</b> ${fmt(area(ROOMS.find(r=>r.id===room.dataset.room).poly))} m²` : '';
     if (ui.tool === 'measure' && ui.mA){ ui.mCur = snapPoint(p, e.shiftKey); renderMeasure(); }
     if (ui.tool === 'drawwall' && ui.wbA){
-      const raw = {x: WallWorkbench.snap(p.x, WallWorkbench.GRID), y: WallWorkbench.snap(p.y, WallWorkbench.GRID)};
-      ui.wbCur = WallWorkbench.orthoSnap(ui.wbA, raw); renderWbPreview();
+      ui.wbCur = snapWallPoint(ui.wbA, p, e.shiftKey); renderWbPreview();
     }
     if (ui.tool === 'calibrate' && ui.calibA && !ui.calibB){
       ui.wbCur = {x: WallWorkbench.snap(p.x, WallWorkbench.GRID), y: WallWorkbench.snap(p.y, WallWorkbench.GRID)};
@@ -1721,8 +1834,17 @@ svg.addEventListener('pointermove', e => {
     return;
   }
   if (drag.kind === 'drawwall'){
-    const raw = {x: WallWorkbench.snap(p.x, WallWorkbench.GRID), y: WallWorkbench.snap(p.y, WallWorkbench.GRID)};
-    ui.wbCur = WallWorkbench.orthoSnap(ui.wbA, raw); drag.moved = true; renderWbPreview(); return;
+    ui.wbCur = snapWallPoint(ui.wbA, p, e.shiftKey); drag.moved = true; renderWbPreview(); return;
+  }
+  if (drag.kind === 'wall-corner'){
+    const far = Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) >= TAP;
+    if (!drag.moved && !far) return;
+    drag.moved = true;
+    const q = {x: WallWorkbench.snap(p.x, WallWorkbench.GRID), y: WallWorkbench.snap(p.y, WallWorkbench.GRID)};
+    WallWorkbench.moveSharedCorner(WALLS, drag.wallIndex, drag.end, q);
+    GEOM_SOURCE = 'custom';
+    renderWalls(); renderSel(); renderDims(); renderOpenings();
+    return;
   }
   const far = Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) >= TAP;
   if (drag.kind === 'measure'){
@@ -1768,8 +1890,14 @@ svg.addEventListener('wheel', e => {
   const r = svg.getBoundingClientRect();
   zoomAt(view.s*Math.exp(-e.deltaY*(e.ctrlKey ? .01 : .0015)), e.clientX-r.left, e.clientY-r.top);
 }, {passive:false});
-svg.addEventListener('dblclick', e => { if (ui.tool==='select' && e.target.closest('[data-fid]')) rotateSel(90); });
-svg.addEventListener('contextmenu', e => { if (ui.tool==='measure'){ e.preventDefault(); ui.mA = null; renderMeasure(); } });
+svg.addEventListener('dblclick', e => {
+  if (ui.tool === 'drawwall' && ui.wbA){ e.preventDefault(); finishDrawWallChain(); return; }
+  if (ui.tool==='select' && e.target.closest('[data-fid]')) rotateSel(90);
+});
+svg.addEventListener('contextmenu', e => {
+  if (ui.tool === 'drawwall' && ui.wbA){ e.preventDefault(); finishDrawWallChain(); return; }
+  if (ui.tool==='measure'){ e.preventDefault(); ui.mA = null; renderMeasure(); }
+});
 
 
 /* ======================= 键盘 ======================= */
@@ -1790,6 +1918,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'x') setTool('demolish');
   else if (k === 'f') fitView();
   else if (k === 'r') rotateSel(e.shiftKey ? -90 : 90);
+  else if (k === 'enter' && ui.tool === 'drawwall' && ui.wbA){ e.preventDefault(); finishDrawWallChain(); }
   else if (k === 'delete' || k === 'backspace'){ e.preventDefault(); deleteSel(); }
   else if (k === 'escape'){
     if (ui.mA){ ui.mA = null; renderMeasure(); }
@@ -2269,13 +2398,43 @@ function applyWizardPicks(){
     document.getElementById('calibPrompt')?.classList.remove('show');
     renderWbPreview();
   });
+  document.getElementById('wbAngleSnap')?.addEventListener('click', () => {
+    ui.angleSnap = !ui.angleSnap;
+    syncAngleSnapBtn();
+    toast(ui.angleSnap
+      ? tr('已开 15° 磁吸（按住 Shift 可临时自由斜墙）', '15° snap on (hold Shift for free angle)')
+      : tr('已关磁吸 · 可画任意斜墙', 'Snap off · free slanted walls'));
+  });
+  syncAngleSnapBtn();
   document.getElementById('calibApply')?.addEventListener('click', () => {
-    if (!ui.calibA || !ui.calibB){ toast(tr('请先点选两个端点', 'Pick two endpoints first')); return; }
-    const real = +document.getElementById('calibLen')?.value;
-    const cal = WallWorkbench.calibFactor(ui.calibA, ui.calibB, real);
-    if (!cal){ toast(tr('长度无效', 'Invalid length')); return; }
+    const modeArea = document.getElementById('calibModeArea')?.checked;
+    let cal = null;
+    let origin = null;
+    if (modeArea){
+      const areaM2 = +document.getElementById('calibArea')?.value;
+      let worldArea = 0;
+      if (ui.calibA && ui.calibB){
+        worldArea = Math.abs(ui.calibB.x - ui.calibA.x) * Math.abs(ui.calibB.y - ui.calibA.y);
+        origin = {x:(ui.calibA.x+ui.calibB.x)/2, y:(ui.calibA.y+ui.calibB.y)/2};
+      } else if (REF_PLACEMENT){
+        worldArea = REF_PLACEMENT.w * REF_PLACEMENT.h;
+        origin = {x: REF_PLACEMENT.x + REF_PLACEMENT.w/2, y: REF_PLACEMENT.y + REF_PLACEMENT.h/2};
+      } else if (WALLS.length){
+        const bb = WallWorkbench.bboxOfWalls(WALLS);
+        worldArea = bb.w * bb.h;
+        origin = {x: bb.x + bb.w/2, y: bb.y + bb.h/2};
+      }
+      cal = WallWorkbench.calibFactorFromArea(worldArea, areaM2);
+      if (!cal){ toast(tr('请填写有效建筑面积㎡（建议量外墙轮廓）', 'Enter valid building area m²')); return; }
+      cal.a = origin; cal.b = origin;
+    } else {
+      if (!ui.calibA || !ui.calibB){ toast(tr('请先点选两个端点', 'Pick two endpoints first')); return; }
+      const real = +document.getElementById('calibLen')?.value;
+      cal = WallWorkbench.calibFactor(ui.calibA, ui.calibB, real);
+      if (!cal){ toast(tr('长度无效', 'Invalid length')); return; }
+      origin = cal.a;
+    }
     mutate(() => {
-      const origin = cal.a;
       const f = cal.factor;
       WALLS = WallWorkbench.scaleWalls(WALLS, origin, f);
       ROOMS = WallWorkbench.scaleRooms(ROOMS, origin, f);
@@ -2284,7 +2443,6 @@ function applyWizardPicks(){
         a: {x: origin.x + (m.a.x - origin.x)*f, y: origin.y + (m.a.y - origin.y)*f},
         b: {x: origin.x + (m.b.x - origin.x)*f, y: origin.y + (m.b.y - origin.y)*f}
       }));
-      // 门窗 / 飘窗过梁 / 参照底图与墙体同一原点缩放，保持锁定
       WINS = WallWorkbench.scaleWins(WINS, origin, f);
       DOORS = WallWorkbench.scaleDoors(DOORS, origin, f);
       SLIDES = WallWorkbench.scaleSlides(SLIDES, origin, f);
@@ -2303,8 +2461,13 @@ function applyWizardPicks(){
     renderDims();
     fitView();
     try { window.View3D?.sync(true); } catch(e) {}
-    toast(tr(`已标定：图上 ${fmt(cal.worldMm/1000,2)} m → 真实 ${fmt(cal.realMm/1000,2)} m（×${fmt(cal.factor,3)}）`,
-             `Calibrated: ${fmt(cal.worldMm/1000,2)} m on plan → ${fmt(cal.realMm/1000,2)} m real (×${fmt(cal.factor,3)})`));
+    if (cal.mode === 'area'){
+      toast(tr(`已按建筑面积 ${fmt(cal.areaM2,1)} ㎡ 标定（×${fmt(cal.factor,3)}）`,
+               `Calibrated by area ${fmt(cal.areaM2,1)} m² (×${fmt(cal.factor,3)})`));
+    } else {
+      toast(tr(`已标定：图上 ${fmt(cal.worldMm/1000,2)} m → 真实 ${fmt(cal.realMm/1000,2)} m（×${fmt(cal.factor,3)}）`,
+               `Calibrated: ${fmt(cal.worldMm/1000,2)} m on plan → ${fmt(cal.realMm/1000,2)} m real (×${fmt(cal.factor,3)})`));
+    }
   });
   updateGeomBadge();
 })();
@@ -3103,11 +3266,31 @@ function buildFurniture(f){
 
 /* ======================= 建筑 ======================= */
 function clearGroup(g){ g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); g.clear(); }
-function wallBox([x0, y0, x1, y1], yb, yt, m){
+function wallBox(rectOrWall, yb, yt, m){
   if (yt - yb <= .001) return;
+  // 中心线墙：沿走向挤出盒子并绕 Y 旋转，避免把斜墙 silently 掰回正交 AABB
+  if (WallWorkbench.isCenterlineWall(rectOrWall)){
+    const cl = WallWorkbench.wallCenterline(rectOrWall);
+    const thick = WallWorkbench.wallThickOf(rectOrWall);
+    const dx = cl.b.x - cl.a.x, dy = cl.b.y - cl.a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const o = new THREE.Mesh(new THREE.BoxGeometry(M(len), yt-yb, M(thick)), m || [wallMat, wallMat, capMat, wallMat, wallMat, wallMat]);
+    o.position.set(wx((cl.a.x+cl.b.x)/2), (yb+yt)/2, wz((cl.a.y+cl.b.y)/2));
+    o.rotation.y = -Math.atan2(dy, dx);
+    o.castShadow = o.receiveShadow = true; archUp.add(o);
+    const ln = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry), edgeMat);
+    ln.position.copy(o.position); ln.rotation.copy(o.rotation);
+    ln.userData.walkOnly = true; ln.visible = opt.mode === 'walk'; archUp.add(ln);
+    if (yb <= .001){
+      const sh = Math.min(.12, yt), sk = new THREE.Mesh(new THREE.BoxGeometry(M(len)+.02, sh, M(thick)+.02), skirtMat);
+      sk.position.set(o.position.x, sh/2, o.position.z); sk.rotation.y = o.rotation.y;
+      sk.userData.walkOnly = true; sk.visible = opt.mode === 'walk'; archUp.add(sk);
+    }
+    return;
+  }
+  const [x0, y0, x1, y1] = rectOrWall;
   const o = new THREE.Mesh(new THREE.BoxGeometry(M(x1-x0), yt-yb, M(y1-y0)), m || [wallMat, wallMat, capMat, wallMat, wallMat, wallMat]);
   o.position.set(wx((x0+x1)/2), (yb+yt)/2, wz((y0+y1)/2)); o.castShadow = o.receiveShadow = true; archUp.add(o);
-  // 漫游辅助：墙体棱线 + 踢脚线，让相邻墙面、墙角一眼可分（仅漫游模式显示）
   const ln = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry), edgeMat); ln.position.copy(o.position); ln.userData.walkOnly = true; ln.visible = opt.mode === 'walk'; archUp.add(ln);
   if (yb <= .001){
     const p = o.geometry.parameters, sh = Math.min(.12, yt), sk = new THREE.Mesh(new THREE.BoxGeometry(p.width + .02, sh, p.depth + .02), skirtMat);
@@ -3139,8 +3322,9 @@ function buildArch(){
   [...DOORS, ...SLIDES].forEach(d => { const [x0, y0, x1, y1] = d.rect; const s = box(M(x1-x0), .012, M(y1-y0), mat('#d8d0c0', {roughness:.3}), wx((x0+x1)/2), 0, wz((y0+y1)/2)); s.castShadow = false; archFloor.add(s); });
   WALLS.forEach((w, i) => {
     if (state.demolished.includes('w'+i)) return;
-    wallBox(w, 0, w[4] === 'low' ? Math.min(1, top) : top);
-    colliders.push([wx(w[0]), wz(w[1]), wx(w[2]), wz(w[3])]);
+    wallBox(w, 0, (w[4] === 'low') ? Math.min(1, top) : top);
+    const bb = WallWorkbench.wallAABB(w);
+    colliders.push([wx(bb[0]), wz(bb[1]), wx(bb[2]), wz(bb[3])]);
   });
   // 门洞、飘窗洞口上方过梁
   [...DOORS.map(d => [d.rect, 2.1]), ...SLIDES.map(s => [s.rect, s.v ? 2.4 : 2.1]), ...BAY_LINTELS.map(r => [r, 2.4])]

@@ -48,7 +48,8 @@
           <div class="meta" id="previewMeta"></div>
           <div class="row">
             <button class="btn danger" type="button" id="clearImage">清除图片</button>
-            <button class="btn primary" type="button" data-goto="rooms">下一步：起步方式 →</button>
+            <button class="btn primary" type="button" id="goDesignNow">进入设计器临摹 →</button>
+            <button class="btn" type="button" data-goto="rooms">可选：样板 / 材质</button>
           </div>
         </div>
       </div>
@@ -104,8 +105,8 @@
       <h2>4. 临摹与设计</h2>
       <p class="lead">设计器顶栏：有底图时点「按我的图临摹」，再标定 → 画墙 → 放门窗 → 识别房间。可用「底图在上」对照描摹。完成后拖家具、看造价，切 3D；漫游前需有入户门。</p>
       <div class="howto" style="margin-bottom:12px">
-        <div class="step-card"><b>标定比例</b><span>点已知边两端，输入真实毫米长度（勿猜）</span></div>
-        <div class="step-card"><b>画墙 / 门窗</b><span>正交画墙后点墙放置入户门、门、窗</span></div>
+        <div class="step-card"><b>标定比例</b><span>点外墙长边两端填 mm；无尺寸可改用建筑面积㎡反推</span></div>
+        <div class="step-card"><b>画墙 / 门窗</b><span>连续折线画墙（回车结束）；默认15°磁吸，Shift=斜墙；再点墙放门窗</span></div>
         <div class="step-card"><b>识别房间</b><span>按封闭区域生成面积，供造价使用</span></div>
         <div class="step-card"><b>从样板开始</b><span>随时加载内置三居室墙体试用</span></div>
       </div>

@@ -357,6 +357,14 @@
     state = save({ imageDataUrl: null, imageName: null, imageSize: null });
     renderUpload();
   };
+  document.getElementById('goDesignNow')?.addEventListener('click', () => {
+    // P0.2：上传后尽快进设计器；样板/材质仍可从导航进入
+    if (!state.imageDataUrl) { alert('请先上传图纸'); return; }
+    state = save({ startMode: 'trace', preferTrace: true, applyOnOpen: true, step: 'design' });
+    showStep('design');
+    openEditor(false);
+  });
+
 
   $('#templateCards').addEventListener('change', e => {
     const inp = e.target.closest('input[name=startMode]');
