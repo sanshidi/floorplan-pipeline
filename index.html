@@ -3,23 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f4f2ed">
-  <title>户型生成工作台</title>
+  <meta name="theme-color" content="#2a5c4f">
+  <title>户型临摹工作台</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <div class="wrap">
     <header class="top">
       <div class="brand">
-        <h1>户型生成工作台</h1>
-        <p>上传户型图 → 选房间与材质 → 本页 2D/3D 布置家具 → 造价与导出</p>
+        <h1>户型临摹工作台</h1>
+        <p>上传户型图 → 标定比例 → 描摹墙体 → 选材质 → 2D/3D 布置 → <span class="nowrap">按真实面积估造价</span></p>
       </div>
-      <span class="badge">纯浏览器 · 无需外链工具</span>
+      <span class="badge">纯浏览器 · 可校准临摹</span>
     </header>
 
     <div class="notice">
-      <strong>关于第一版</strong>
-      不会自动从图纸识别墙体。上传的户型图作为<strong>参照底图</strong>；墙体与房间使用内置可编辑样板（来自 floorplan-3d），你在本页完成家具、材质、测量、拆改非承重墙、3D 漫游与导出。
+      <strong>业主流程</strong>
+      上传户型图后，设计器默认按你的图空白临摹（不自动识墙）。依次：标定真实尺寸 → 画墙 → 放门窗 → 识别房间估造价 → 布置家具与 3D 漫游。也可点「从样板开始」用内置三居室试用。
+      <div class="flow">
+        <span>① 上传图纸</span>
+        <span>② 选材质</span>
+        <span>③ 临摹墙体</span>
+        <span>④ 布置 · 3D</span>
+        <span>⑤ 看造价导出</span>
+      </div>
     </div>
 
     <nav class="steps" id="stepNav" aria-label="步骤"></nav>
@@ -27,7 +34,7 @@
     <!-- 1 上传 -->
     <section class="panel" data-panel="upload">
       <h2>1. 上传户型图</h2>
-      <p class="lead">支持 PNG / JPG / WEBP。图片仅保存在本机浏览器 localStorage，不会上传到服务器。</p>
+      <p class="lead">支持 PNG / JPG / WEBP。图片仅保存在本机浏览器，不会上传到服务器。上传后进入设计器，即可对着底图标定与描墙。</p>
       <div class="drop" id="dropZone" tabindex="0" role="button" aria-label="上传户型图">
         <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/*">
         <div>
@@ -41,7 +48,7 @@
           <div class="meta" id="previewMeta"></div>
           <div class="row">
             <button class="btn danger" type="button" id="clearImage">清除图片</button>
-            <button class="btn primary" type="button" data-goto="rooms">下一步：选房间 →</button>
+            <button class="btn primary" type="button" data-goto="rooms">下一步：起步方式 →</button>
           </div>
         </div>
       </div>
@@ -52,10 +59,15 @@
 
     <!-- 2 房间 -->
     <section class="panel hidden" data-panel="rooms">
-      <h2>2. 选择房间 / 样板</h2>
-      <p class="lead">使用内置三居室样板（可测、可拆非承重墙）。勾选你关心的房间，进入设计器后可为它们统一套用材质。</p>
+      <h2>2. 起步方式与房间</h2>
+      <p class="lead">上传了图纸时，默认「按我的图临摹」。若只想试用，可选「从样板开始」。下方房间勾选主要用于套用地面材质；自建墙后点「识别房间」会按封闭区域重算面积与造价。</p>
+      <div class="howto">
+        <div class="step-card"><b>按我的图临摹</b><span>设计器清空样板墙，对着底图标定 → 画墙 → 放门窗</span></div>
+        <div class="step-card"><b>从样板开始</b><span>加载内置三居室，可对着底图微调或拆非承重墙</span></div>
+        <div class="step-card"><b>造价怎么算</b><span>识别后的房间面积 × 地面单价 × 1.05 损耗</span></div>
+      </div>
       <div class="cards" id="templateCards"></div>
-      <h3 style="margin:16px 0 8px;font-size:1rem">样板房间</h3>
+      <h3>房间勾选（套材质用）</h3>
       <div class="chips" id="roomChips"></div>
       <div class="row" style="margin-top:14px">
         <button class="btn" type="button" data-goto="upload">← 上一步</button>
@@ -68,13 +80,13 @@
     <!-- 3 材质 -->
     <section class="panel hidden" data-panel="materials">
       <h2>3. 地面 / 墙面材质</h2>
-      <p class="lead">列表来自 OpenPlan3D 与 floorplan-3d 的真实材质目录。地面带单价，进入设计器后按面积 ×1.05 损耗估算造价。</p>
+      <p class="lead">从常用地面与墙面效果中挑选。地面带单价，进入设计器后按面积 ×1.05 损耗估算造价。</p>
       <div class="mat-section">
         <h3>地面材质（单选 · 将应用到已选房间）</h3>
         <div class="chips" id="floorChips"></div>
       </div>
       <div class="mat-section">
-        <h3>墙面材质（单选 · OpenPlan3D 墙漆/贴面）</h3>
+        <h3>墙面材质（单选 · 墙漆 / 贴面）</h3>
         <div class="chips" id="wallChips"></div>
       </div>
       <label class="chip" style="margin-top:8px;cursor:pointer">
@@ -89,8 +101,14 @@
 
     <!-- 4 设计 -->
     <section class="panel hidden" data-panel="design">
-      <h2>4. 本页设计器</h2>
-      <p class="lead">下方嵌入完整 2D 布置 + Three.js 3D 漫游。左侧拖家具，右侧改材质与造价，顶栏可导出 PNG/JSON。上传的户型图会作为 2D 参照底图。</p>
+      <h2>4. 临摹与设计</h2>
+      <p class="lead">设计器顶栏：有底图时点「按我的图临摹」，再标定 → 画墙 → 放门窗 → 识别房间。可用「底图在上」对照描摹。完成后拖家具、看造价，切 3D；漫游前需有入户门。</p>
+      <div class="howto" style="margin-bottom:12px">
+        <div class="step-card"><b>标定比例</b><span>点已知边两端，输入真实毫米长度（勿猜）</span></div>
+        <div class="step-card"><b>画墙 / 门窗</b><span>正交画墙后点墙放置入户门、门、窗</span></div>
+        <div class="step-card"><b>识别房间</b><span>按封闭区域生成面积，供造价使用</span></div>
+        <div class="step-card"><b>从样板开始</b><span>随时加载内置三居室墙体试用</span></div>
+      </div>
       <div class="row" style="margin-bottom:10px">
         <button class="btn" type="button" data-goto="materials">← 返回材质</button>
         <button class="btn primary" type="button" id="openEditor">在本页打开 / 刷新设计器</button>
@@ -100,47 +118,46 @@
       <div class="editor-frame-wrap">
         <iframe id="editorFrame" title="户型设计器" src="about:blank"></iframe>
       </div>
-      <p class="footer-note">设计器同源嵌入（./editor.html）。若 iframe 过矮，可用「新标签打开」获得全屏体验，数据仍写回同一 localStorage。</p>
+      <p class="footer-note">设计器同源嵌入（./editor.html）。若 iframe 过矮，可用「新标签打开」获得全屏体验，数据仍写回同一本机浏览器。</p>
     </section>
 
     <!-- 5 导出 -->
     <section class="panel hidden" data-panel="export">
       <h2>5. 结果与导出</h2>
-      <p class="lead">作业状态保存在 <code>localStorage['floorplan-pipeline-v1']</code>；设计方案保存在 <code>huxing-design-v1</code>。</p>
+      <p class="lead">下方汇总本次临摹与地面造价（按各材质面积分别列出）。需要备份时可下载 JSON；平面/3D 图片请在设计器「文件 → 导出图片」。</p>
       <div class="job-grid" id="jobStats"></div>
-      <h3 style="margin:16px 0 8px;font-size:1rem">作业 JSON</h3>
+      <h3 style="margin:16px 0 8px;font-size:1rem">地面材质造价明细</h3>
+      <div id="floorBreakdown" class="floor-breakdown"></div>
+      <h3 style="margin:16px 0 8px;font-size:1rem">作业备份（本机存档）</h3>
       <textarea class="json-box" id="jobJson" readonly></textarea>
       <div class="row">
-        <button class="btn primary" type="button" id="downloadJob">下载作业 JSON</button>
-        <button class="btn" type="button" id="copyJob">复制 JSON</button>
+        <button class="btn primary" type="button" id="downloadJob">下载备份文件</button>
+        <button class="btn" type="button" id="copyJob">复制备份内容</button>
         <button class="btn" type="button" data-goto="design">← 回到设计器</button>
         <button class="btn danger" type="button" id="resetAll">清空本机作业与方案</button>
       </div>
       <p class="footer-note">PNG 导出请在设计器顶栏「文件 → 导出图片」完成（2D 或 3D 截图）。</p>
     </section>
 
-    <!-- 能力说明 -->
-    <section class="panel">
-      <h2>本页实际能力</h2>
-      <p class="lead">整合自 floorplan-3d（本地编辑器）与 OpenPlan3D 材质目录；不连接外部 SaaS / MCP。</p>
+    <!-- 能力说明：折叠，不挡主路径 -->
+    <details class="panel cap-details">
+      <summary>开发说明（可选）</summary>
+      <p class="lead">本地静态页；不连接外部 SaaS。不自动识墙。</p>
       <div class="matrix">
         <table class="cap">
           <thead>
             <tr><th>能力</th><th>说明</th><th>状态</th></tr>
           </thead>
           <tbody>
-            <tr><td>上传户型图参照</td><td>作为 2D 底图，可调透明度</td><td>本页完成</td></tr>
-            <tr><td>2D 家具布置</td><td>60+ 家具家电，拖放 / 旋转 / 贴墙</td><td>本页完成</td></tr>
-            <tr><td>3D 漫游</td><td>Three.js 鸟瞰 + 第一人称</td><td>本页完成</td></tr>
-            <tr><td>地面材质 + 造价</td><td>样板材质 + OpenPlan3D 扩展，面积×单价×1.05</td><td>本页完成</td></tr>
-            <tr><td>墙面材质</td><td>OpenPlan3D 墙漆 / 砖石 / 木饰面等，按房间记录</td><td>本页完成</td></tr>
-            <tr><td>测量 / 拆改非承重墙</td><td>快捷键 M / X</td><td>本页完成</td></tr>
-            <tr><td>导出 PNG / JSON</td><td>设计器文件菜单；作业 JSON 在本向导</td><td>本页完成</td></tr>
+            <tr><td>上传户型图参照</td><td>作为 2D 底图，可调透明度</td><td>可用</td></tr>
+            <tr><td>临摹画墙 / 门窗</td><td>标定、正交墙、放门窗、识别房间</td><td>可用</td></tr>
+            <tr><td>2D / 3D 布置</td><td>家具拖放、鸟瞰与漫游（需入户门）</td><td>可用</td></tr>
+            <tr><td>地面造价</td><td>面积 × 单价 × 1.05</td><td>可用</td></tr>
             <tr><td>自动识图建墙</td><td>未实现</td><td>不做</td></tr>
           </tbody>
         </table>
       </div>
-    </section>
+    </details>
   </div>
   <script src="./app.js"></script>
 </body>

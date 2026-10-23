@@ -1,39 +1,40 @@
-# 户型生成工作台
+# 户型临摹工作台
 
-纯前端中文 SPA：上传户型图作为参照 → 选择房间与材质 → **在本页**完成 2D 布置 / 3D 漫游 / 地面造价 / 导出。
+纯浏览器静态站点：上传户型图 → **标定比例 → 描摹墙体 → 识别房间** → 选材质排家具 → 2D/3D → 按封闭面积估造价。
 
-不打开外部 SaaS，不要求 Pascal MCP，不「跳出去用别的工具」。
+不自动从图片识别墙体；墙线由用户对照底图临摹（也可从内置三居室样板起步）。
 
-## 快速开始
+## 本地运行
 
 ```bash
-cd /workspace/floorplan-pipeline
-python3 -m http.server 8765 --bind 127.0.0.1
+cd floorplan-pipeline
+python3 -m http.server 8765
+# 打开 http://127.0.0.1:8765/
 ```
 
-打开 <http://127.0.0.1:8765/>
+主入口：`index.html`（向导）· 设计器：`editor.html`（可单独打开）。
 
-## 页面
+## 关键文件
 
-| 路径 | 说明 |
+| 文件 | 说明 |
 |------|------|
-| `/` (`index.html`) | 五步向导：上传 → 房间 → 材质 → 设计器 → 导出 |
-| `/editor.html` | 内嵌设计器（基于 [floorplan-3d](https://github.com/wy51ai/floorplan-3d)，已扩材质与参照底图） |
-| `/vendor/floorplan-3d/` | 上游克隆（未改源，便于对照） |
+| `index.html` / `app.js` / `styles.css` | 五步向导与样式 |
+| `editor.html` | 2D/3D 设计器（含临摹工具条） |
+| `wall-workbench.js` | 比例标定、正交画墙、房间识别、几何 pack/unpack |
+| `PRODUCT.md` | 产品定位与 schema 说明 |
+| `vendor/` | 本地素材（若有） |
 
-## 本机存储
+## 数据
 
-- `localStorage['floorplan-pipeline-v1']` — 向导作业（图片 data URL、材质、房间勾选等）
-- `localStorage['huxing-design-v1']` — 设计器方案（家具、房间材质、拆墙、测量）
+浏览器 `localStorage`：
 
-## 能力边界
+- `floorplan-pipeline-v1` — 向导状态
+- `huxing-design-v1` — 方案（家具、材质、**geometry** 墙/房/标定）
 
-- **会做**：参照底图、样板墙体上布置家具、地面/墙面材质、造价估算（面积×单价×1.05）、测量、拆非承重墙、2D/3D、PNG/JSON 导出
-- **不做**：从图纸自动识别墙体 / 矢量化；连接 OpenPlan3D 云端或 Pascal MCP
+详见 `PRODUCT.md`。
 
-详见 [PRODUCT.md](./PRODUCT.md)。
+## 限制
 
-## 上游致谢
-
-- [wy51ai/floorplan-3d](https://github.com/wy51ai/floorplan-3d) — 2D/3D 编辑器内核
-- [OpenPlan3D](https://app.openplan3d.com/) — 地面/墙面材质目录参考（列表已写入本产品，运行时不访问其网站）
+- 画墙为正交 AABB 段；房间识别为栅格洪水填充近似，复杂斜墙/开口需人工调整
+- 自建房间 id 为自动生成；向导勾选的样板房间材质主要在「样板起步」时生效
+- 未做云端识墙 / 账号同步

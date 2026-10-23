@@ -2,11 +2,11 @@
 (() => {
   const STORE = 'floorplan-pipeline-v1';
   const STEPS = [
-    { id: 'upload', n: '1', t: '上传户型图' },
-    { id: 'rooms', n: '2', t: '选房间' },
+    { id: 'upload', n: '1', t: '上传图纸' },
+    { id: 'rooms', n: '2', t: '起步方式' },
     { id: 'materials', n: '3', t: '选材质' },
-    { id: 'design', n: '4', t: '设计器' },
-    { id: 'export', n: '5', t: '结果导出' },
+    { id: 'design', n: '4', t: '临摹设计' },
+    { id: 'export', n: '5', t: '造价导出' },
   ];
 
   // floorplan-3d 样板房间（与 editor 内 ROOMS 对齐）
@@ -89,6 +89,7 @@
     wallFinish: 'warm-white',
     clearFurniture: false,
     applyOnOpen: false,
+    startMode: 'trace', // trace | template — 有图时默认临摹
   });
 
   function load() {
@@ -137,16 +138,20 @@
   }
 
   function renderTemplates() {
+    const mode = state.startMode || (state.imageDataUrl ? 'trace' : 'template');
     $('#templateCards').innerHTML = `
-      <label class="card on">
-        <input type="radio" name="tpl" value="sample-3br" checked>
-        <div class="title">示例三居室样板</div>
-        <div class="desc">内置墙体 / 门窗 / 房间多边形；可测量、拆非承重墙、2D/3D 布置。上传图作参照底图。</div>
+      <label class="card ${mode === 'trace' ? 'on' : ''}">
+        <input type="radio" name="startMode" value="trace" ${mode === 'trace' ? 'checked' : ''}>
+        <div class="title">按我的图临摹</div>
+        <div class="desc">进入设计器后清空样板墙，对着你的底图标定、画墙、放门窗。上传图纸时推荐此项。</div>
+        <span class="tag">推荐 · 有图纸</span>
       </label>
-      <div class="card" style="cursor:default;opacity:.85">
-        <div class="title">自定义描墙</div>
-        <div class="desc">第一版不做自动识图与手绘建墙。请对照参照图在样板上布置与拆改。</div>
-      </div>`;
+      <label class="card ${mode === 'template' ? 'on' : ''}">
+        <input type="radio" name="startMode" value="template" ${mode === 'template' ? 'checked' : ''}>
+        <div class="title">从样板开始</div>
+        <div class="desc">加载内置三居室墙体 / 门窗，可试用布置与 3D；也可再改成与图纸一致。</div>
+        <span class="tag">可拆非承重墙</span>
+      </label>`;
   }
 
   function renderRooms() {
@@ -158,7 +163,7 @@
 
   function renderMats() {
     $('#floorChips').innerHTML = FLOOR_MATS.map(m => `
-      <button type="button" class="chip ${state.floorMat === m.id ? 'on' : ''}" data-floor="${m.id}" title="${m.src} · ¥${m.price}/m²">
+      <button type="button" class="chip ${state.floorMat === m.id ? 'on' : ''}" data-floor="${m.id}" title="约 ¥${m.price}/m²（含损耗另计）">
         <span class="swatch" style="background:${m.sw}"></span>${m.name}
         <span class="meta">¥${m.price}</span>
       </button>`).join('');
@@ -177,7 +182,7 @@
       skip.classList.add('hidden');
       $('#previewImg').src = state.imageDataUrl;
       const kb = state.imageSize ? (state.imageSize / 1024).toFixed(1) + ' KB' : '';
-      $('#previewMeta').innerHTML = `<div><strong>${state.imageName || '已上传'}</strong></div><div>${kb}</div><div class="meta">已写入 localStorage</div>`;
+      $('#previewMeta').innerHTML = `<div><strong>${state.imageName || '已上传'}</strong></div><div>${kb}</div><div class="meta">已保存在本机浏览器</div>`;
     } else {
       box.classList.add('hidden');
       skip.classList.remove('hidden');
@@ -191,24 +196,97 @@
     const floor = FLOOR_MATS.find(m => m.id === state.floorMat);
     const wall = WALL_FINISHES.find(w => w.id === state.wallFinish);
     const furnCount = design?.furniture?.length ?? '—';
+    const geom = design?.geometry;
+    const geomSrc = geom?.source === 'custom' ? '自建临摹' : (geom ? '内置样板' : (state.geomSource === 'custom' ? '自建临摹' : '样板 / 未保存'));
+    const roomN = Array.isArray(geom?.rooms) ? geom.rooms.length : (state.selectedRooms || []).length;
+    const cal = geom?.calib?.realMm ? ('已标定') : (state.scaleCalib?.realMm ? '已标定' : '未标定');
+    const title = design?.title || '—';
     $('#jobStats').innerHTML = `
-      <div class="stat"><div class="k">户型图</div><div class="v">${state.imageName || '未上传（仅样板）'}</div></div>
-      <div class="stat"><div class="k">地面材质</div><div class="v">${floor ? floor.name : state.floorMat}</div></div>
-      <div class="stat"><div class="k">墙面材质</div><div class="v">${wall ? wall.name : state.wallFinish}</div></div>
-      <div class="stat"><div class="k">已选房间</div><div class="v">${(state.selectedRooms || []).length} 个</div></div>
-      <div class="stat"><div class="k">方案家具数</div><div class="v">${furnCount}</div></div>
-      <div class="stat"><div class="k">地面估价（设计器）</div><div class="v">${state.flooringEstimate != null ? '¥' + Number(state.flooringEstimate).toLocaleString() : '进入设计器后生成'}</div></div>
+      <div class="stat"><div class="k">方案名称</div><div class="v">${esc(title)}</div></div>
+      <div class="stat"><div class="k">户型图</div><div class="v">${esc(state.imageName || '未上传（仅样板）')}</div></div>
+      <div class="stat"><div class="k">墙体</div><div class="v">${geomSrc}</div></div>
+      <div class="stat"><div class="k">比例</div><div class="v">${cal}</div></div>
+      <div class="stat"><div class="k">房间数</div><div class="v">${roomN}</div></div>
+      <div class="stat"><div class="k">默认地面</div><div class="v">${floor ? floor.name : '—'}</div></div>
+      <div class="stat"><div class="k">墙面</div><div class="v">${wall ? wall.name : '—'}</div></div>
+      <div class="stat"><div class="k">家具件数</div><div class="v">${furnCount}</div></div>
+      <div class="stat"><div class="k">地面估价合计</div><div class="v">${state.flooringEstimate != null ? '¥' + Number(state.flooringEstimate).toLocaleString() : '请在设计器点「完成并导出」'}</div></div>
       <div class="stat"><div class="k">最近更新</div><div class="v">${fmtTime(state.updatedAt)}</div></div>
     `;
-    $('#jobJson').value = JSON.stringify({
-      pipeline: state,
+    // 明细：优先用设计器写出的 breakdown；否则按房间材质汇总
+    let rows = Array.isArray(state.flooringBreakdown) ? state.flooringBreakdown.slice() : [];
+    if (!rows.length && geom?.rooms && design?.rooms) {
+      const map = {};
+      geom.rooms.forEach(r => {
+        if (r.counted === false) return;
+        const mid = (design.rooms[r.id] && design.rooms[r.id].mat) || r.mat || state.floorMat || 'wood';
+        const mat = FLOOR_MATS.find(m => m.id === mid) || { id: mid, name: mid, price: 0 };
+        const poly = r.poly || [];
+        let a = 0;
+        for (let i = 0; i < poly.length; i++) {
+          const p = poly[i], q = poly[(i + 1) % poly.length];
+          a += p[0] * q[1] - q[0] * p[1];
+        }
+        a = Math.abs(a) / 2 / 1e6;
+        if (!map[mid]) map[mid] = { id: mid, name: mat.name, price: mat.price, area: 0, cost: 0 };
+        map[mid].area += a;
+        map[mid].cost += a * mat.price * 1.05;
+      });
+      rows = Object.values(map).map(x => ({
+        id: x.id, name: x.name, price: x.price,
+        area: Math.round(x.area * 100) / 100,
+        cost: Math.round(x.cost)
+      }));
+    }
+    const box = $('#floorBreakdown');
+    if (box) {
+      if (!rows.length) {
+        box.innerHTML = '<p class="meta">暂无明细。请在设计器完成识别房间后点「完成并导出」。</p>';
+      } else {
+        box.innerHTML = `<table class="cap"><thead><tr><th>地面材质</th><th>面积 m²</th><th>单价</th><th>小计（含 5% 损耗）</th></tr></thead><tbody>` +
+          rows.map(r => `<tr><td>${esc(r.name)}</td><td>${r.area}</td><td>¥${r.price}/m²</td><td>¥${Number(r.cost).toLocaleString()}</td></tr>`).join('') +
+          `</tbody></table>`;
+      }
+    }
+    // 备份摘要用中文键；完整原始数据放在「技术存档」里，不挡主界面
+    const pipePublic = Object.assign({}, state);
+    delete pipePublic.imageDataUrl; // 预览图体积大，仍只留在本机浏览器
+    const friendly = {
+      '方案名称': title,
+      '户型图文件': state.imageName || '未上传',
+      '墙体来源': geomSrc,
+      '比例标定': cal,
+      '房间数': roomN,
+      '默认地面': floor ? floor.name : '—',
+      '墙面': wall ? wall.name : '—',
+      '家具件数': design?.furniture?.length || 0,
+      '地面估价合计': state.flooringEstimate != null ? state.flooringEstimate : null,
+      '地面明细': rows.map(r => ({
+        '材质': r.name,
+        '面积（㎡）': r.area,
+        '单价': r.price,
+        '小计': r.cost,
+      })),
+      '最近更新': state.updatedAt || null,
+    };
+    const tech = {
+      pipeline: pipePublic,
       designSummary: design ? {
+        title: design.title,
         furnitureCount: design.furniture?.length || 0,
-        rooms: design.rooms,
-        demolished: design.demolished,
         wallFinish: design.wallFinish,
+        geometry: geom ? {
+          source: geom.source,
+          wallCount: geom.walls?.length || 0,
+          roomCount: geom.rooms?.length || 0,
+          calibrated: !!(geom.calib && geom.calib.realMm),
+        } : null,
       } : null,
-    }, null, 2);
+    };
+    $('#jobJson').value = JSON.stringify({ '作业摘要': friendly, '技术存档': tech }, null, 2);
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
   function fmtTime(iso) {
@@ -228,6 +306,7 @@
         imageName: file.name,
         imageSize: file.size,
         refVisible: true,
+        startMode: 'trace',
       });
       renderUpload();
     };
@@ -235,8 +314,11 @@
   }
 
   function openEditor(newTab) {
+    const startMode = state.startMode || (state.imageDataUrl ? 'trace' : 'template');
     state = save({
       applyOnOpen: true,
+      startMode,
+      preferTrace: startMode === 'trace' && !!state.imageDataUrl,
       clearFurniture: $('#clearFurniture')?.checked || state.clearFurniture,
       step: 'design',
     });
@@ -276,6 +358,12 @@
     renderUpload();
   };
 
+  $('#templateCards').addEventListener('change', e => {
+    const inp = e.target.closest('input[name=startMode]');
+    if (!inp) return;
+    state = save({ startMode: inp.value, template: inp.value === 'template' ? 'sample-3br' : 'trace-mine' });
+    renderTemplates();
+  });
   $('#roomChips').addEventListener('click', e => {
     const b = e.target.closest('[data-room]');
     if (!b) return;
@@ -318,7 +406,7 @@
     const blob = new Blob([$('#jobJson').value], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'floorplan-pipeline-job.json';
+    a.download = '户型作业备份.json';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
