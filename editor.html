@@ -65,6 +65,11 @@ main{position:relative;overflow:hidden;background:var(--paper)}
 .wall-preview-poly{fill:rgba(42,92,79,.28);stroke:#2a5c4f;stroke-width:1.5;vector-effect:non-scaling-stroke;pointer-events:none}
 .wall-len-label{fill:#2a5c4f;font-weight:600;paint-order:stroke;stroke:#fff;stroke-width:4;pointer-events:none}
 .wb-anglesnap.on{background:#2a5c4f;color:#fff}
+.wb-draft-banner{display:none;align-items:center;gap:10px;flex-wrap:wrap;margin:0 12px 8px;padding:8px 12px;
+  background:#fff6e8;border:1px solid #e8c48a;border-radius:8px;font-size:13px;color:#5c4a2e}
+.wb-draft-banner.show{display:flex}
+.wb-draft-banner b{color:#9a5b12}
+.wb-draft-banner .muted{color:#7a6a55;font-size:12px}
 #plan.tool-select .room:hover{opacity:.82}
 #plan .furn{cursor:move}
 @media (hover:hover){#plan .furn:hover{filter:drop-shadow(0 0 2px rgba(181,101,58,.7))}}
@@ -271,6 +276,7 @@ body.walking #walkExit{display:block}
     <span class="sep"></span>
     <div class="wb-tools" id="wbTools" title="临摹墙体">
       <button class="btn primary" type="button" id="wbTraceMine" title="清空样板墙，对着底图空白临摹">按我的图临摹</button>
+      <button class="btn" type="button" id="wbAiDraft" title="调用本地 Node 识墙 API 生成墙草稿（stub，必人工核对）">生成墙草稿</button>
       <button class="btn" type="button" data-wb="calibrate" title="两点标定，或用建筑面积㎡反推比例">标定比例</button>
       <button class="btn" type="button" data-wb="drawwall" title="连续折线画墙：点击继续，回车/双击/右键结束；默认15°磁吸">画墙</button>
       <button class="btn" type="button" id="wbAngleSnap" title="角度磁吸（默认15°；关闭或按住Shift=自由斜墙）">15°磁吸</button>
@@ -395,7 +401,13 @@ body.walking #walkExit{display:block}
     </div>
     <div class="scalebar" id="scalebar"><span id="sbText">1 m</span><div class="bar" id="sbBar"></div></div>
     <div class="modehint" id="modehint"></div>
-    <div id="calibPrompt">
+    <div id="wbDraftBanner" class="wb-draft-banner" role="status">
+    <b>AI 墙草稿</b>
+    <span id="wbDraftBannerText">当前为识墙草稿，请拖角点 / 删补墙后点「识别房间」。修墙后将标记为自建。</span>
+    <span class="muted" id="wbDraftEngine"></span>
+    <button class="btn" type="button" id="wbDraftDismiss" style="margin-left:auto">知道了</button>
+  </div>
+  <div id="calibPrompt">
       <div><b>比例尺标定</b> · 建议量外墙最长边；无尺寸可改用建筑面积</div>
       <div style="margin-top:8px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">
         <label style="display:inline-flex;align-items:center;gap:4px"><input type="radio" name="calibMode" id="calibModeLen" value="len" checked> 两点长度</label>
@@ -423,6 +435,7 @@ body.walking #walkExit{display:block}
 <div id="toast"></div>
 
 <script src="./wall-workbench.js"></script>
+<script src="./ai-draft-client.js"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -544,7 +557,7 @@ const TEMPLATE_ROOMS = [
   {id:'bay2', name:'子女房飘窗', poly:[[10270,4260],[10510,4260],[10510,4210],[11030,4210],[11030,5785],[10510,5785],[10510,5740],[10270,5740]], mat:'marble', counted:false},
 ];
 let ROOMS = WallWorkbench.cloneRooms(TEMPLATE_ROOMS);
-let GEOM_SOURCE = 'template'; // template | custom
+let GEOM_SOURCE = 'template'; // template | custom | ai-draft
 let GEOM_CALIB = null;
 const MATS = {
   wood:    {name:'橡木地板', price:320, sw:'#d8b88a'},
@@ -718,7 +731,7 @@ function applyGeometry(g, opt){
   GEOM_SOURCE = g.source || 'custom';
   GEOM_CALIB = g.calib || null;
   if (g.openings) applyOpeningsPack(g.openings);
-  else if (GEOM_SOURCE === 'custom') clearOpenings();
+  else if (GEOM_SOURCE === 'custom' || GEOM_SOURCE === 'ai-draft') clearOpenings();
   else {
     resetOpeningsToTemplate();
     // 旧存档无 openings 字段：若已标定，按 calib 原点缩放样板门窗以匹配已缩放墙体
@@ -772,13 +785,37 @@ function persistGeometry(){
 function updateGeomBadge(){
   const el = document.getElementById('geomBadge');
   if (!el) return;
-  if (GEOM_SOURCE === 'custom'){
+  if (GEOM_SOURCE === 'ai-draft'){
+    el.textContent = 'AI草稿 ' + WALLS.length + ' 段 · 待核对';
+    el.title = '识墙草稿（stub/引擎）— 必人工核对；修改后变为自建墙';
+  } else if (GEOM_SOURCE === 'custom'){
     const n = ROOMS.filter(r => r.counted !== false).length;
     const calib = GEOM_CALIB ? ' · 已标定' : '';
     el.textContent = '自建墙 ' + WALLS.length + ' 段 / ' + n + ' 室' + calib;
+    el.title = '墙体来源：自建';
   } else {
     el.textContent = GEOM_CALIB ? '样板墙 · 已标定' : '样板墙';
+    el.title = '墙体来源：样板';
   }
+  syncDraftBanner();
+}
+function syncDraftBanner(){
+  const ban = document.getElementById('wbDraftBanner');
+  if (!ban) return;
+  ban.classList.toggle('show', GEOM_SOURCE === 'ai-draft');
+}
+function showDraftReviewMode(meta){
+  const ban = document.getElementById('wbDraftBanner');
+  const eng = document.getElementById('wbDraftEngine');
+  const txt = document.getElementById('wbDraftBannerText');
+  if (txt){
+    const warn = (meta && meta.warning) || '草稿必人工核对';
+    txt.textContent = warn + ' · 请拖角点/删补墙，再点「识别房间」。';
+  }
+  if (eng) eng.textContent = meta && meta.engine ? ('引擎: ' + meta.engine) : '';
+  if (ban) ban.classList.add('show');
+  setTool('select');
+  toast(tr('已写入墙草稿 — 请核对后识别房间', 'Wall draft applied — review, then detect rooms'));
 }
 
 const PX_MM = 25.4 / 96;                       // 1 CSS px = 0.2646 mm
@@ -787,7 +824,7 @@ const TAP = COARSE ? 9 : 4;                    // 手指按下后移动超过该
 const narrow = () => matchMedia('(max-width:1100px)').matches;
 const TEMPLATE_BOUNDS = {x:-1850, y:-1750, w:15600, h:14100};
 function BOUNDS(){
-  if (GEOM_SOURCE === 'custom'){
+  if (GEOM_SOURCE === 'custom' || GEOM_SOURCE === 'ai-draft'){
     if (WALLS.length) return WallWorkbench.bboxOfWalls(WALLS);
     // 空白临摹：用参照底图范围，避免 view 塌缩
     return {x: REF_PLACEMENT.x, y: REF_PLACEMENT.y, w: REF_PLACEMENT.w, h: REF_PLACEMENT.h};
@@ -1272,7 +1309,8 @@ function renderAll(){
 
 function updateHeader(){
   const tot = ROOMS.filter(r => r.counted !== false).reduce((a,r) => a + area(r.poly), 0);
-  const src = GEOM_SOURCE === 'custom' ? tr('自建墙', 'Custom walls') : tr('样板墙', 'Template walls');
+  const src = GEOM_SOURCE === 'ai-draft' ? tr('AI草稿', 'AI draft')
+    : GEOM_SOURCE === 'custom' ? tr('自建墙', 'Custom walls') : tr('样板墙', 'Template walls');
   const cal = GEOM_CALIB ? tr(' · 已标定比例', ' · scale calibrated') : '';
   $('#subtitle').textContent = tr(`套内约 ${fmt(tot)} m² · ${src}${cal} · 单位 mm`, `Net ≈ ${fmt(tot)} m² · ${src}${cal} · mm`);
   $('#undo').disabled = !undoStack.length; $('#redo').disabled = !redoStack.length;
@@ -2398,7 +2436,87 @@ function applyWizardPicks(){
     document.getElementById('calibPrompt')?.classList.remove('show');
     renderWbPreview();
   });
-  document.getElementById('wbAngleSnap')?.addEventListener('click', () => {
+  document.getElementById('wbDraftDismiss')?.addEventListener('click', () => {
+    document.getElementById('wbDraftBanner')?.classList.remove('show');
+  });
+  document.getElementById('wbAiDraft')?.addEventListener('click', () => { runAiWallDraft(); });
+
+  async function runAiWallDraft(){
+    const pipe = loadPipeline();
+    const dataUrl = pipe.imageDataUrl;
+    if (!dataUrl){
+      toast(tr('请先上传户型底图', 'Upload a floor-plan image first'));
+      return;
+    }
+    const btn = document.getElementById('wbAiDraft');
+    const prev = btn ? btn.textContent : '';
+    if (btn){ btn.disabled = true; btn.textContent = tr('生成中…', 'Generating…'); }
+    const setProg = (p, st) => {
+      if (btn) btn.textContent = tr('草稿 ', 'Draft ') + Math.round(p) + '%';
+    };
+    try {
+      if (!window.FloorplanAiDraft) throw Object.assign(new Error('客户端未加载'), { code: 'NO_CLIENT' });
+      // 可选：把当前标定折成 mm/px（底图放置宽 / 图像像素宽）
+      let scaleMmPerPx;
+      try {
+        const img = new Image();
+        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = dataUrl; });
+        if (img.naturalWidth > 0 && REF_PLACEMENT && REF_PLACEMENT.w > 0){
+          scaleMmPerPx = REF_PLACEMENT.w / img.naturalWidth;
+        }
+      } catch(_){}
+      const areaM2 = GEOM_CALIB && GEOM_CALIB.mode === 'area' ? GEOM_CALIB.areaM2 : undefined;
+      const result = await FloorplanAiDraft.vectorize({
+        dataUrl,
+        filename: pipe.imageName || 'floorplan.png',
+        scaleMmPerPx,
+        areaM2,
+        onProgress: setProg,
+      });
+      if (!result || !Array.isArray(result.walls) || !result.walls.length){
+        throw Object.assign(new Error('结果无墙段'), { code: 'EMPTY_RESULT' });
+      }
+      mutate(() => {
+        WALLS = WallWorkbench.cloneWalls(result.walls);
+        clearOpenings();
+        if (result.openings){
+          if (Array.isArray(result.openings.wins)) WINS = WallWorkbench.cloneWins(result.openings.wins);
+          if (Array.isArray(result.openings.doors)) DOORS = WallWorkbench.cloneDoors(result.openings.doors);
+        }
+        ROOMS = (result.rooms && result.rooms.length)
+          ? result.rooms.map((r, i) => ({
+              id: r.id || ('room' + i),
+              name: r.name || ('房间 ' + (i + 1)),
+              poly: r.poly,
+              at: r.at || WallWorkbench.centroid(r.poly),
+              mat: r.mat || 'wood',
+              counted: r.counted !== false,
+            }))
+          : WallWorkbench.findRoomsFromWalls(WALLS);
+        GEOM_SOURCE = 'ai-draft';
+        if (!state.title || /三室两厅|样板/.test(state.title)) state.title = 'AI草稿 · 待核对';
+        persistGeometry();
+        savePipeline({ geomSource: 'ai-draft', aiDraftMeta: result.meta || null });
+      });
+      renderOpenings(); renderDims(); syncSchemeTitle();
+      fitView();
+      try { window.View3D?.sync(true); } catch(e) {}
+      showDraftReviewMode(result.meta);
+    } catch (e) {
+      console.warn('[ai-draft]', e);
+      const msg = (e && e.message) ? e.message : String(e);
+      toast(tr('识墙不可用：', 'Vectorize unavailable: ') + msg + tr(' — 可继续手画', ' — continue hand-drawing'));
+      // 降级：不改现有墙；引导标定/画墙
+      if (!WALLS.length || GEOM_SOURCE === 'template'){
+        // 有底图时提示手画路径
+        setTool('calibrate');
+      }
+    } finally {
+      if (btn){ btn.disabled = false; btn.textContent = prev || tr('生成墙草稿', 'Generate wall draft'); }
+    }
+  }
+
+    document.getElementById('wbAngleSnap')?.addEventListener('click', () => {
     ui.angleSnap = !ui.angleSnap;
     syncAngleSnapBtn();
     toast(ui.angleSnap

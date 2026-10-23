@@ -1,0 +1,20 @@
+{
+  "name": "floorplan-pipeline-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "P1 MVP: async floorplan vectorize job API (stub/heuristic engine, replaceable)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "image-size": "^1.2.0",
+    "multer": "^2.5.0"
+  }
+}
