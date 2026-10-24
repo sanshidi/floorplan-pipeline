@@ -1,21 +1,27 @@
 /**
- * Optional EXTERNAL_VECTORIZE_URL adapter.
- * Expects POST multipart/binary → JSON with walls (mm centerline) or wallsPx.
- * Disabled when env unset.
+ * EXTERNAL_VECTORIZE_URL semantic adapter.
+ * - EXTERNAL_FORMAT=auto|native|xmarva|rasterscan (default auto)
+ * - EXTERNAL_API_KEY → X-API-Key and/or Authorization: Bearer
+ * - EXTERNAL_TIMEOUT_MS (default 25000)
+ * Normalizes native / xmarva / RasterScan-ish JSON via normalize.js
  */
 'use strict';
 
 const {
   WARNING,
   readDims,
-  resolveScaleMmPerPx,
-  wallsPxToMm,
 } = require('./scale');
+const { normalizeExternal } = require('./normalize');
 
 const ENGINE_ID = 'external-v1';
 
 function enabled() {
   return !!(process.env.EXTERNAL_VECTORIZE_URL || '').trim();
+}
+
+function timeoutMs() {
+  const n = +(process.env.EXTERNAL_TIMEOUT_MS || 25000);
+  return Number.isFinite(n) && n > 0 ? n : 25000;
 }
 
 /**
@@ -42,48 +48,54 @@ async function run(input) {
   if (input.areaM2 > 0) form.append('areaM2', String(input.areaM2));
 
   const headers = {};
-  if (process.env.EXTERNAL_API_KEY) {
-    headers['X-API-Key'] = process.env.EXTERNAL_API_KEY;
+  const key = (process.env.EXTERNAL_API_KEY || '').trim();
+  if (key) {
+    headers['X-API-Key'] = key;
+    headers['Authorization'] = 'Bearer ' + key;
   }
 
-  const res = await fetch(url, { method: 'POST', body: form, headers });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs());
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', body: form, headers, signal: ac.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    const err = new Error(
+      e.name === 'AbortError' ? 'external vectorize timeout' : ('external fetch: ' + (e.message || e))
+    );
+    err.code = e.name === 'AbortError' ? 'EXTERNAL_TIMEOUT' : 'EXTERNAL_FETCH';
+    throw err;
+  }
+  clearTimeout(timer);
+
   if (!res.ok) {
     const err = new Error('external vectorize HTTP ' + res.status);
     err.code = 'EXTERNAL_HTTP';
     throw err;
   }
   const data = await res.json();
-  const dims = (data.imagePx || data.meta && data.meta.imagePx) || readDims(buf);
-  const pxW = dims.width;
-  const pxH = dims.height;
-  const scale = resolveScaleMmPerPx(pxW, pxH, input.scaleMmPerPx, input.areaM2);
+  const dims = (data.imagePx || (data.meta && data.meta.imagePx)) || readDims(buf);
+  const pxW = dims.width || dims.w || 800;
+  const pxH = dims.height || dims.h || 600;
 
-  let walls = data.walls;
-  if ((!walls || !walls.length) && Array.isArray(data.wallsPx)) {
-    walls = wallsPxToMm(data.wallsPx, pxW, pxH, scale);
-  }
-  if ((!walls || !walls.length) && data.result && Array.isArray(data.result.walls)) {
-    walls = data.result.walls;
-  }
-  if (!walls || !walls.length) {
-    const err = new Error('external response has no walls');
-    err.code = 'EXTERNAL_EMPTY';
-    throw err;
-  }
+  const format = (process.env.EXTERNAL_FORMAT || 'auto').toLowerCase();
+  const normalized = normalizeExternal(data, {
+    format,
+    pxW,
+    pxH,
+    scaleMmPerPx: input.scaleMmPerPx,
+    areaM2: input.areaM2,
+  });
 
-  return {
-    walls,
-    openings: data.openings || { doors: [], wins: [] },
-    rooms: data.rooms || [],
-    meta: Object.assign({}, data.meta || {}, {
-      engine: ENGINE_ID,
-      warning: WARNING,
-      imagePx: { width: pxW, height: pxH },
-      scaleMmPerPx: scale,
-      externalUrl: url.replace(/\/\/([^:/@]+@)/, '//***@'),
-      note: 'Mapped from EXTERNAL_VECTORIZE_URL; still draft — review required',
-    }),
-  };
+  normalized.meta = Object.assign({}, normalized.meta, {
+    engine: ENGINE_ID,
+    warning: WARNING,
+    externalUrl: url.replace(/\/\/([^:/@]+@)/, '//***@'),
+    externalFormat: normalized.meta.format,
+    note: 'Mapped from EXTERNAL_VECTORIZE_URL (' + normalized.meta.format + '); still draft — review required',
+  });
+  return normalized;
 }
 
 module.exports = { run, ENGINE_ID, enabled };

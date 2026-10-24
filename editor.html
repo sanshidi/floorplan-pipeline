@@ -365,6 +365,8 @@ body.walking #walkExit{display:block}
       <div class="menu-pop">
         <button class="btn" id="exportPng" data-en="Export image">导出图片</button>
         <button class="btn" id="exportJson" data-en="Export plan JSON">导出方案 JSON</button>
+        <button class="btn" id="cloudSave" data-en="Save to cloud">保存到云端</button>
+        <button class="btn" id="cloudShare" data-en="Copy share link">复制分享链接</button>
         <button class="btn" id="importJson" data-en="Import plan">导入方案</button>
         <button class="btn danger" id="reset" data-en="Reset to default">重置为默认方案</button>
       </div></details>
@@ -449,6 +451,7 @@ body.walking #walkExit{display:block}
 
 <script src="./wall-workbench.js"></script>
 <script src="./ai-draft-client.js"></script>
+<script src="./cloud-client.js"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -2217,6 +2220,59 @@ matchMedia('(max-width:1100px)').addEventListener('change', () => drawer(null));
 drawer(null);                                  // 恢复上次的面板收起状态
 $('#exportPng').onclick = exportPNG;
 $('#exportJson').onclick = () => download(tr('户型装修方案', 'floor-plan-design') + '.json', new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
+
+async function cloudSaveOrShare(copyLinkOnly){
+  if (!window.FloorplanCloud) {
+    toast(tr('云存档客户端未加载', 'Cloud client missing'));
+    return;
+  }
+  try { persistGeometry(); } catch(e) { try { save(); } catch(e2) {} }
+  const title = (state && state.title) || tr('未命名方案', 'Untitled plan');
+  let thumb = null;
+  try {
+    // lightweight: skip huge PNG; optional later
+  } catch(e) {}
+  const payload = {
+    id: state.cloudId || undefined,
+    title,
+    geometry: state.geometry,
+    thumbnailDataUrl: thumb,
+    meta: { geomSource: typeof GEOM_SOURCE !== 'undefined' ? GEOM_SOURCE : null, client: 'editor' },
+  };
+  toast(tr('正在保存到云端…', 'Saving to cloud…'));
+  try {
+    const out = await FloorplanCloud.saveProject(payload);
+    state.cloudId = out.id;
+    state.shareUrl = out.shareUrl;
+    try { save(); } catch(e) {}
+    if (copyLinkOnly) {
+      const ok = await FloorplanCloud.copyText(out.shareUrl);
+      toast(ok
+        ? tr('已保存并复制分享链接', 'Saved — share link copied')
+        : (tr('已保存：', 'Saved: ') + out.shareUrl));
+    } else {
+      toast(tr('已保存到云端', 'Saved to cloud') + ' · ' + out.id);
+      try { await FloorplanCloud.copyText(out.shareUrl); } catch(e) {}
+    }
+    return out;
+  } catch (e) {
+    console.warn(e);
+    toast(tr('云存档失败，已改用本地导出 JSON', 'Cloud save failed — exporting JSON locally'));
+    try {
+      download(tr('户型装修方案', 'floor-plan-design') + '.json', new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
+    } catch (e2) {}
+  }
+}
+$('#cloudSave') && ($('#cloudSave').onclick = () => cloudSaveOrShare(false));
+$('#cloudShare') && ($('#cloudShare').onclick = async () => {
+  if (state.shareUrl) {
+    const ok = await FloorplanCloud.copyText(state.shareUrl);
+    toast(ok ? tr('已复制分享链接', 'Share link copied') : state.shareUrl);
+    return;
+  }
+  await cloudSaveOrShare(true);
+});
+
 $('#importJson').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = e => {
   const file = e.target.files[0]; if (!file) return;
@@ -4011,6 +4067,17 @@ function shot(){ const a = document.createElement('a'); a.download = tr('户型�
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
 window.View3D = {enter, exit, relang, sync:(force) => sync(!!force), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
+
+/* Cloud share deep-link: #/share/{id} → share.html */
+(function bootShareRoute(){
+  try {
+    if (!window.FloorplanCloud) return;
+    const sid = FloorplanCloud.parseShareId();
+    if (!sid) return;
+    // Prefer dedicated read-only page
+    location.replace('./share.html?id=' + encodeURIComponent(sid));
+  } catch (e) { console.warn('share route', e); }
+})();
 </script>
 </body>
 </html>

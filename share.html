@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>分享方案 · 只读</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a2332; --line:#2a3544; --txt:#e8eef6; --muted:#8b9bb0; --acc:#3b82f6; --ok:#22c55e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--txt); min-height:100vh; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .badge { font-size:11px; padding:3px 8px; border-radius:999px; background:#334155; color:#cbd5e1; }
+  header .spacer { flex:1; }
+  button, .btn { appearance:none; border:1px solid var(--line); background:#243044; color:var(--txt); padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+  button.primary, .btn.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  main { max-width:1100px; margin:0 auto; padding:20px; }
+  .status { color:var(--muted); font-size:13px; margin-bottom:12px; }
+  .status.err { color:#f87171; }
+  .canvas-wrap { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
+  canvas { display:block; margin:0 auto; background:#fff; border-radius:4px; max-width:100%; }
+  .meta { margin-top:16px; display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
+  .meta .cell { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .meta .k { font-size:11px; color:var(--muted); }
+  .meta .v { font-size:14px; margin-top:4px; }
+  .hint { margin-top:18px; font-size:12px; color:var(--muted); line-height:1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">分享方案</h1>
+  <span class="badge">只读</span>
+  <div class="spacer"></div>
+  <button type="button" id="btnCopy">复制分享链接</button>
+  <a class="btn primary" id="btnClone" href="#">复制到本地编辑</a>
+</header>
+<main>
+  <div class="status" id="status">加载中…</div>
+  <div class="canvas-wrap"><canvas id="cv" width="900" height="600"></canvas></div>
+  <div class="meta" id="meta"></div>
+  <p class="hint">此页为云端分享只读预览。点击「复制到本地编辑」会把方案写入本机浏览器并打开设计器（可改墙/家具）。写入云端需要 API；公开分享链接的 GET 不需要密钥。</p>
+</main>
+<script src="./wall-workbench.js"></script>
+<script src="./cloud-client.js"></script>
+<script>
+(function () {
+  const statusEl = document.getElementById('status');
+  const titleEl = document.getElementById('title');
+  const metaEl = document.getElementById('meta');
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  function idFromUrl() {
+    const fromCloud = FloorplanCloud.parseShareId();
+    if (fromCloud) return fromCloud;
+    const m = (location.pathname || '').match(/share\/([A-Za-z0-9_-]+)/);
+    return m ? m[1] : null;
+  }
+
+  function drawGeometry(geom) {
+    if (!geom || !WallWorkbench) return;
+    const g = WallWorkbench.unpackGeometry(geom);
+    const walls = g.walls || [];
+    const rooms = g.rooms || [];
+    if (!walls.length) {
+      statusEl.textContent = '方案无墙数据';
+      return;
+    }
+    const bb = WallWorkbench.bboxOfWalls(walls);
+    const pad = 400;
+    const w = bb.w + pad * 2, h = bb.h + pad * 2;
+    const maxW = 900, maxH = 640;
+    const scale = Math.min(maxW / w, maxH / h, 0.12);
+    cv.width = Math.round(w * scale);
+    cv.height = Math.round(h * scale);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    const tx = (x) => (x - bb.x + pad) * scale;
+    const ty = (y) => (y - bb.y + pad) * scale;
+
+    rooms.forEach(r => {
+      if (!r.poly || r.poly.length < 3) return;
+      ctx.beginPath();
+      r.poly.forEach((p, i) => i ? ctx.lineTo(tx(p[0]), ty(p[1])) : ctx.moveTo(tx(p[0]), ty(p[1])));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(59,130,246,0.08)';
+      ctx.fill();
+      if (r.name) {
+        const c = WallWorkbench.centroid(r.poly);
+        ctx.fillStyle = '#334155';
+        ctx.font = '12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(r.name, tx(c[0]), ty(c[1]));
+      }
+    });
+
+    walls.forEach(wall => {
+      const poly = WallWorkbench.wallPolygon(wall);
+      ctx.beginPath();
+      poly.forEach((p, i) => i ? ctx.lineTo(tx(p[0]), ty(p[1])) : ctx.moveTo(tx(p[0]), ty(p[1])));
+      ctx.closePath();
+      ctx.fillStyle = '#1e293b';
+      ctx.fill();
+    });
+  }
+
+  async function main() {
+    const id = idFromUrl();
+    if (!id) {
+      statusEl.className = 'status err';
+      statusEl.textContent = '缺少分享 id（用法：share.html?id=… 或 editor.html#/share/…）';
+      return;
+    }
+    try {
+      const doc = await FloorplanCloud.loadProject(id);
+      titleEl.textContent = doc.title || '分享方案';
+      statusEl.textContent = '已加载 · id=' + id + ' · 更新于 ' + (doc.updatedAt || '—');
+      drawGeometry(doc.geometry);
+      const cells = [
+        ['墙段', (doc.geometry && doc.geometry.walls && doc.geometry.walls.length) || '—'],
+        ['房间', (doc.geometry && doc.geometry.rooms && doc.geometry.rooms.length) || '—'],
+        ['创建', doc.createdAt || '—'],
+        ['API', FloorplanCloud.apiBase()],
+      ];
+      metaEl.innerHTML = cells.map(([k, v]) =>
+        '<div class="cell"><div class="k">' + k + '</div><div class="v">' + String(v) + '</div></div>'
+      ).join('');
+
+      document.getElementById('btnCopy').onclick = async () => {
+        const url = location.href.split('#')[0].replace(/share\.html.*/, 'share.html?id=' + id);
+        const ok = await FloorplanCloud.copyText(doc.shareUrl || url);
+        statusEl.textContent = ok ? '已复制分享链接' : ('请手动复制：' + (doc.shareUrl || url));
+      };
+
+      document.getElementById('btnClone').onclick = (e) => {
+        e.preventDefault();
+        try {
+          const STORE = 'huxing-design-v1';
+          const prev = JSON.parse(localStorage.getItem(STORE) || '{}');
+          const next = Object.assign({}, prev, {
+            geometry: doc.geometry,
+            title: (doc.title || '分享方案') + '（副本）',
+            shareCloneOf: id,
+          });
+          localStorage.setItem(STORE, JSON.stringify(next));
+          localStorage.setItem('fp-share-clone', JSON.stringify({ id, at: Date.now() }));
+        } catch (err) {
+          alert('写入本地失败：' + (err.message || err));
+          return;
+        }
+        location.href = './editor.html?fromShare=' + encodeURIComponent(id);
+      };
+    } catch (e) {
+      statusEl.className = 'status err';
+      statusEl.textContent = '加载失败：' + (e.message || e) + '（确认 API 已启动，且 FP_API 指向 ' + FloorplanCloud.apiBase() + '）';
+    }
+  }
+  main();
+})();
+</script>
+</body>
+</html>

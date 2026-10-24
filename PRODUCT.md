@@ -4,7 +4,7 @@
 
 面向「已有户型图、想在浏览器里**标定尺寸、描摹墙体、排家具、选材质、看 3D、估地面造价**」的用户。  
 主路径是**自包含静态网页**：无需构建即可手画临摹。  
-**可选**本地 Node 识墙草稿 API（P1）：默认 OpenCV Hough 线检测生成可编辑墙中心线，**必须人工核对**——不是酷家乐/商业级语义识房。
+**可选**本地 Node 识墙草稿 API（P1）：默认 OpenCV Hough + 可选本地 semantic-post；亦可接自建 RasterScan/FastAPI（`EXTERNAL_*`）。另有磁盘云存档与公开分享只读链（P1.5）。**必须人工核对**——不是酷家乐/商业级语义识房。
 
 ## 用户流程
 
@@ -19,7 +19,8 @@
    - **删墙**：几何命中（非仅 DOM）
    - **识别房间**：墙网栅格洪水填充 → 多边形面积（斜墙按厚度多边形涂栅格）
    - 家具布置、测量、拆非承重墙、3D 漫游、导出 PNG/JSON
-4. **结果导出** — 作业 JSON；方案含墙几何
+   - **可选「保存到云端 / 复制分享链接」**：`POST /v1/projects`；失败仍可本地导出 JSON
+4. **结果导出 / 分享** — 作业 JSON；或打开 `share.html?id=` 只读预览并可「复制到本地编辑」
 
 ## 墙几何 schema（兼容扩展）
 
@@ -38,7 +39,8 @@
 
 | 环节 | 方式 |
 |------|------|
-| 识墙建模 | **主路径：手动临摹**。可选 Node OpenCV 线检测草稿（`cv-hough-v1`，失败降级 stub；`warning: 草稿必人工核对`）；**不假装**商业级语义识房 |
+| 识墙建模 | **主路径：手动临摹**。可选 `cv-hough-v1`[+`semantic-post-v1`]；或 `ENGINE=external` 归一化 native/xmarva/rasterscan；失败降级 stub；`warning: 草稿必人工核对`；**不假装**商业级语义识房 |
+| 云存档 | 磁盘 `server/data/projects/`；短随机 id；分享 GET 公开；写操作与 `API_KEY` 一致 |
 | 比例 | 两点标定或建筑面积㎡反推；`calib` 写入方案 |
 | 房间面积 | 识别后的封闭多边形；未识别时仍用当前 `ROOMS` |
 | 造价 | `Σ(房间面积 × 地面单价) × 1.05` 损耗系数 |
@@ -51,7 +53,8 @@
 - `huxing-design-v1` — 设计方案；`geometry`：
   - `{ source, walls, rooms, calib?, openings?, refPlacement?, wallSchema? }`
   - 缺省时回退内置三居室样板墙
-- `FP_API` / `FP_API_KEY` — 可选；覆盖默认识墙 API `http://127.0.0.1:8787`（也可用 `?api=` / `window.FP_API`）
+- `FP_API` / `FP_API_KEY` — 可选；覆盖默认识墙/云存档 API `http://127.0.0.1:8787`（也可用 `?api=` / `window.FP_API`）
+- 方案可含 `cloudId` / `shareUrl`（云存档成功后写入）
 
 ## 材质来源（真实列表）
 
@@ -61,18 +64,20 @@
 ## 技术
 
 - 静态 HTML/CSS/JS；`wall-workbench.js` 提供标定 / 折线画墙 / 角点 / 房间识别
-- `ai-draft-client.js` — 可选识墙客户端（轮询 job；失败降级手画）
+- `ai-draft-client.js` / `cloud-client.js` — 识墙与云存档客户端
+- `share.html` — 分享只读页
 - 设计器源自 floorplan-3d 单文件；Three.js 经 jsDelivr
 - 静态服务：`python3 -m http.server 8765`（或任意静态服务器）
-- **可选 API**：`server/` — Express + 内存 job；默认 `cv-hough-v1`（Python OpenCV）；`ENGINE=stub` 可强制启发式；详见 `server/README.md`
+- **可选 API**：`server/` — Express + 内存 job + 磁盘 projects；默认 CV+semantic-post；`EXTERNAL_*` 适配层；详见 `server/README.md`
 
 ## 明确不做（本版）
 
-付费第三方识墙（无密钥则不用）、LiDAR、商家 BOM、照片级渲染、持久化云存档、账号同步。  
-**不做**：把 stub 结果宣传成「自动建模完成」。
+付费第三方识墙默认不用（可自建 RasterScan/FastAPI）、LiDAR、商家 BOM、照片级渲染、账号体系/多人权限。  
+云存档仅为单机磁盘 MVP（非 SaaS）。**不做**：把 stub/CV/heuristic 宣传成「自动建模完成」。
 
 ## 路线图摘录
 
 - **P0**（已落地）：手画折线 / 磁吸 / 角点 / 面积标定 / 上传→设计
-- **P1.1–P1.4**：Node `/v1/vectorize`（CV 默认）+ 前端「生成墙草稿」+ 修墙（对齐/重画/删构件）+ 失败降级
-- 后续：真 CV/第三方 adapter、修墙工具子集、云存档
+- **P1.1–P1.4**：Node `/v1/vectorize`（CV 默认）+「生成墙草稿」+ 修墙 + 失败降级
+- **P1.5（本版）**：外部 normalize（native/xmarva/rasterscan）+ semantic-post；磁盘 projects + 分享只读链
+- 后续：账号、权限、真 SaaS 存档、更强语义模型

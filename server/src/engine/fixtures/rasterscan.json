@@ -1,0 +1,25 @@
+{
+  "source": "rasterscan",
+  "plan_recognition": {
+    "walls": [
+      { "start": { "x": 15, "y": 15 }, "end": { "x": 385, "y": 15 }, "thickness": 10 },
+      { "start": { "x": 385, "y": 15 }, "end": { "x": 385, "y": 285 }, "thickness": 10 },
+      { "start": { "x": 385, "y": 285 }, "end": { "x": 15, "y": 285 }, "thickness": 10 },
+      { "start": { "x": 15, "y": 285 }, "end": { "x": 15, "y": 15 }, "thickness": 10 },
+      { "from": { "x": 200, "y": 15 }, "to": { "x": 200, "y": 285 }, "type": "n" }
+    ],
+    "rooms": [
+      {
+        "name": "客厅",
+        "points": [[15,15],[200,15],[200,285],[15,285]],
+        "area": 18.5
+      }
+    ],
+    "doors": [
+      { "start": { "x": 90, "y": 15 }, "end": { "x": 140, "y": 15 }, "name": "门" }
+    ],
+    "windows": [
+      { "p1": { "x": 250, "y": 15 }, "p2": { "x": 320, "y": 15 } }
+    ]
+  }
+}
