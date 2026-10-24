@@ -37,7 +37,14 @@ function auth(req, res, next) {
 }
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, engine: ENGINE_ID, time: new Date().toISOString() });
+  const { preferredEngine } = require('./engine');
+  res.json({
+    ok: true,
+    engine: ENGINE_ID,
+    preferred: preferredEngine(),
+    external: !!(process.env.EXTERNAL_VECTORIZE_URL || '').trim(),
+    time: new Date().toISOString(),
+  });
 });
 
 app.post('/v1/vectorize', auth, (req, res) => {

@@ -634,6 +634,114 @@
     };
   }
 
+
+  /**
+   * 正交对齐：近水平/近竖直墙吸到 0°/90°，端点再吸网格；共享角点会自然重合。
+   * @param {number[][]} walls
+   * @param {number[]|null} indices  null/空 = 全部
+   * @param {{ angTolDeg?: number, grid?: number }} opts
+   * @returns {{ walls: number[][], changed: number }}
+   */
+  function alignWallsOrtho(walls, indices, opts) {
+    opts = opts || {};
+    const angTol = (opts.angTolDeg != null ? opts.angTolDeg : 12) * Math.PI / 180;
+    const g = opts.grid != null ? opts.grid : GRID;
+    const out = cloneWalls(walls);
+    const set = indices && indices.length
+      ? new Set(indices)
+      : null;
+    let changed = 0;
+    out.forEach((w, i) => {
+      if (set && !set.has(i)) return;
+      const cl = wallCenterline(w);
+      const dx = cl.b.x - cl.a.x, dy = cl.b.y - cl.a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return;
+      const ang = Math.atan2(dy, dx);
+      const mod = ((ang % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
+      const distOrtho = Math.min(mod, Math.PI / 2 - mod);
+      if (distOrtho > angTol) return; // 斜墙保留
+      const horiz = Math.abs(Math.cos(ang)) >= Math.abs(Math.sin(ang));
+      let ax, ay, bx, by;
+      if (horiz) {
+        const y = snap((cl.a.y + cl.b.y) / 2, g);
+        ax = snap(Math.min(cl.a.x, cl.b.x), g);
+        bx = snap(Math.max(cl.a.x, cl.b.x), g);
+        ay = by = y;
+      } else {
+        const x = snap((cl.a.x + cl.b.x) / 2, g);
+        ay = snap(Math.min(cl.a.y, cl.b.y), g);
+        by = snap(Math.max(cl.a.y, cl.b.y), g);
+        ax = bx = x;
+      }
+      const kind = wallKind(w);
+      const thick = wallThickOf(w);
+      const next = [ax, ay, bx, by, kind, thick];
+      const prev = out[i];
+      if (prev[0] !== next[0] || prev[1] !== next[1] || prev[2] !== next[2] || prev[3] !== next[3] || !isCenterlineWall(prev)) {
+        out[i] = next;
+        changed++;
+      }
+    });
+    // 第二遍：共享角点吸附（把接近的端点拉到同一网格点）
+    const pts = [];
+    out.forEach((w, i) => {
+      if (set && !set.has(i)) return;
+      const cl = wallCenterline(w);
+      pts.push({ i, end: 0, x: cl.a.x, y: cl.a.y });
+      pts.push({ i, end: 1, x: cl.b.x, y: cl.b.y });
+    });
+    const join = CORNER_JOIN_TOL;
+    for (let a = 0; a < pts.length; a++) {
+      for (let b = a + 1; b < pts.length; b++) {
+        const pa = pts[a], pb = pts[b];
+        if (pa.i === pb.i) continue;
+        if (Math.hypot(pa.x - pb.x, pa.y - pb.y) <= join) {
+          const mx = snap((pa.x + pb.x) / 2, g);
+          const my = snap((pa.y + pb.y) / 2, g);
+          pa.x = pb.x = mx; pa.y = pb.y = my;
+        }
+      }
+    }
+    pts.forEach(p => {
+      const w = out[p.i];
+      const cl = wallCenterline(w);
+      let ax = cl.a.x, ay = cl.a.y, bx = cl.b.x, by = cl.b.y;
+      if (p.end === 0) { ax = p.x; ay = p.y; } else { bx = p.x; by = p.y; }
+      out[p.i] = [ax, ay, bx, by, wallKind(w), wallThickOf(w)];
+    });
+    return { walls: out, changed };
+  }
+
+  /** 点选门/窗：返回 { type:'door'|'win'|'slide', index } 或 null */
+  function findOpeningAt(openings, pt, tol) {
+    tol = tol == null ? 140 : tol;
+    let best = null, bestD = tol;
+    const doors = (openings && openings.doors) || [];
+    doors.forEach((d, i) => {
+      const r = d.rect || d;
+      if (!r || r.length < 4) return;
+      const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+      const d0 = Math.hypot(pt.x - cx, pt.y - cy);
+      if (d0 < bestD) { bestD = d0; best = { type: 'door', index: i }; }
+    });
+    const wins = (openings && openings.wins) || [];
+    wins.forEach((w, i) => {
+      const cx = (w[0] + w[2]) / 2, cy = (w[1] + w[3]) / 2;
+      const d0 = Math.hypot(pt.x - cx, pt.y - cy);
+      if (d0 < bestD) { bestD = d0; best = { type: 'win', index: i }; }
+    });
+    const slides = (openings && openings.slides) || [];
+    slides.forEach((s, i) => {
+      const r = s.rect || s;
+      if (!r || r.length < 4) return;
+      const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+      const d0 = Math.hypot(pt.x - cx, pt.y - cy);
+      if (d0 < bestD) { bestD = d0; best = { type: 'slide', index: i }; }
+    });
+    return best;
+  }
+
   global.WallWorkbench = {
     DEFAULT_THICK, GRID, ANGLE_SNAP_DEG, CORNER_JOIN_TOL,
     cloneWalls, cloneRooms,
@@ -646,6 +754,7 @@
     centroid, polyAreaM2, bboxOfWalls,
     findRoomsFromWalls, refPlacement,
     distToWall, findWallIndex, findWallCorner, moveSharedCorner,
+    alignWallsOrtho, findOpeningAt,
     wallIsHorizontal, wallSegLen,
     makeDoorOnWall, makeWinOnWall,
     packGeometry, unpackGeometry

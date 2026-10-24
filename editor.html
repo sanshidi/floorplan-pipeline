@@ -70,6 +70,11 @@ main{position:relative;overflow:hidden;background:var(--paper)}
 .wb-draft-banner.show{display:flex}
 .wb-draft-banner b{color:#9a5b12}
 .wb-draft-banner .muted{color:#7a6a55;font-size:12px}
+.wb-draft-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;margin-top:4px}
+.wb-draft-tools .btn{font-size:12px;padding:4px 8px}
+.wall.wall-msel{stroke:#c47a20;stroke-width:2.5;vector-effect:non-scaling-stroke;filter:brightness(.95)}
+#plan.tool-erasewall .opening-hit{pointer-events:all;cursor:pointer}
+#plan.tool-erasewall .opening-hit:hover{outline:2px solid #c45c26}
 #plan.tool-select .room:hover{opacity:.82}
 #plan .furn{cursor:move}
 @media (hover:hover){#plan .furn:hover{filter:drop-shadow(0 0 2px rgba(181,101,58,.7))}}
@@ -276,7 +281,7 @@ body.walking #walkExit{display:block}
     <span class="sep"></span>
     <div class="wb-tools" id="wbTools" title="临摹墙体">
       <button class="btn primary" type="button" id="wbTraceMine" title="清空样板墙，对着底图空白临摹">按我的图临摹</button>
-      <button class="btn" type="button" id="wbAiDraft" title="调用本地 Node 识墙 API 生成墙草稿（stub，必人工核对）">生成墙草稿</button>
+      <button class="btn" type="button" id="wbAiDraft" title="调用本地识墙 API（默认 OpenCV 线检测草稿，必人工核对）">生成墙草稿</button>
       <button class="btn" type="button" data-wb="calibrate" title="两点标定，或用建筑面积㎡反推比例">标定比例</button>
       <button class="btn" type="button" data-wb="drawwall" title="连续折线画墙：点击继续，回车/双击/右键结束；默认15°磁吸">画墙</button>
       <button class="btn" type="button" id="wbAngleSnap" title="角度磁吸（默认15°；关闭或按住Shift=自由斜墙）">15°磁吸</button>
@@ -406,6 +411,14 @@ body.walking #walkExit{display:block}
     <span id="wbDraftBannerText">当前为识墙草稿，请拖角点 / 删补墙后点「识别房间」。修墙后将标记为自建。</span>
     <span class="muted" id="wbDraftEngine"></span>
     <button class="btn" type="button" id="wbDraftDismiss" style="margin-left:auto">知道了</button>
+    <div class="wb-draft-tools" id="wbDraftTools">
+      <span class="muted">修墙：</span>
+      <button class="btn" type="button" id="wbAlignOrtho" title="近水平/近竖直墙吸到 0°/90°（有多选则只对齐选中）">正交对齐</button>
+      <button class="btn" type="button" id="wbRedrawSeg" title="删除选中墙段并立刻进入画墙（从邻近角点吸附）">重画此段</button>
+      <button class="btn" type="button" id="wbEraseMember" title="点墙删墙；点门窗删门窗">删构件</button>
+      <button class="btn primary" type="button" id="wbAcceptDraft" title="接受草稿，进入正常自建编辑">接受草稿</button>
+      <span class="muted">Shift+点墙可多选</span>
+    </div>
   </div>
   <div id="calibPrompt">
       <div><b>比例尺标定</b> · 建议量外墙最长边；无尺寸可改用建筑面积</div>
@@ -876,7 +889,7 @@ const svg = $('#plan');
 
 /* ======================= 状态 / 历史 / 存储 ======================= */
 let state = load() || defaultState();
-const ui = {tool:'select', sel:null, mA:null, mCur:null, wbA:null, wbCur:null, calibA:null, calibB:null,
+const ui = {tool:'select', sel:null, selWalls:new Set(), mA:null, mCur:null, wbA:null, wbCur:null, calibA:null, calibB:null,
   refOnTop:true, lastStagePt:null, angleSnap:true,
   layers:{dims:true, labels:true, furn:true, grid:false, bearing:false, wallSnap:true}};
 let view = {x0:0, y0:0, s:.06};
@@ -1104,28 +1117,32 @@ function renderWalls(){
     if (dem){ fill = 'rgba(198,91,58,.12)'; ex = 'stroke="#c65b3a" stroke-width="1.2" stroke-dasharray="5 3" vector-effect="non-scaling-stroke"'; }
     const poly = WallWorkbench.wallPolygon(w);
     const pts = poly.map(p => p.join(',')).join(' ');
+    const idx = +String(id).slice(1);
     const sel = ui.sel?.kind === 'wall' && ui.sel.id === id;
-    if (sel && !dem) ex = (ex ? ex + ' ' : '') + 'stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"';
-    return `<polygon class="wall" data-wall="${id}" points="${pts}" fill="${fill}" ${ex}/>`;
+    const msel = ui.selWalls && ui.selWalls.has(idx);
+    let cls = 'wall';
+    if (msel) cls += ' wall-msel';
+    if ((sel || msel) && !dem) ex = (ex ? ex + ' ' : '') + 'stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"';
+    return `<polygon class="${cls}" data-wall="${id}" points="${pts}" fill="${fill}" ${ex}/>`;
   }).join('');
 }
 
 function renderOpenings(){
   const WS = 'stroke="#4f7394" stroke-width="1" vector-effect="non-scaling-stroke"';
   let s = '';
-  WINS.forEach(([x0,y0,x1,y1]) => {
+  WINS.forEach(([x0,y0,x1,y1], wi) => {
     const w = x1-x0, h = y1-y0;
-    s += `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="#f7fbfd" ${WS}/>`;
+    s += `<rect class="opening-hit" data-win="${wi}" x="${x0}" y="${y0}" width="${w}" height="${h}" fill="#f7fbfd" ${WS}/>`;
     if (w >= h) [1/3,2/3].forEach(t => s += `<line x1="${x0}" y1="${y0+h*t}" x2="${x1}" y2="${y0+h*t}" ${WS}/>`);
     else [1/3,2/3].forEach(t => s += `<line x1="${x0+w*t}" y1="${y0}" x2="${x0+w*t}" y2="${y1}" ${WS}/>`);
   });
   const DS = 'stroke="#3d3a34" stroke-width="1" vector-effect="non-scaling-stroke"';
-  DOORS.forEach(d => {
+  DOORS.forEach((d, di) => {
     const [hx,hy] = d.h, L = d.len, T = 40;
     const ox = hx + d.o[0]*L, oy = hy + d.o[1]*L, cx = hx + d.c[0]*L, cy = hy + d.c[1]*L;
     const sweep = d.o[0]*d.c[1] - d.o[1]*d.c[0] > 0 ? 1 : 0;
     const col = d.entry ? '#b5653a' : '#3d3a34';
-    s += `<polygon points="${hx},${hy} ${ox},${oy} ${ox+d.c[0]*T},${oy+d.c[1]*T} ${hx+d.c[0]*T},${hy+d.c[1]*T}" fill="#fff" stroke="${col}" stroke-width="${d.entry?1.8:1}" vector-effect="non-scaling-stroke"/>`;
+    s += `<polygon class="opening-hit" data-door="${di}" points="${hx},${hy} ${ox},${oy} ${ox+d.c[0]*T},${oy+d.c[1]*T} ${hx+d.c[0]*T},${hy+d.c[1]*T}" fill="#fff" stroke="${col}" stroke-width="${d.entry?1.8:1}" vector-effect="non-scaling-stroke"/>`;
     s += `<path d="M${ox} ${oy}A${L} ${L} 0 0 ${sweep} ${cx} ${cy}" fill="none" ${DS} stroke-dasharray="5 3" opacity=".7"/>`;
   });
   SLIDES.forEach(({rect:[x0,y0,x1,y1],v}) => {
@@ -1610,7 +1627,7 @@ function syncModeHint(){
     demolish:tr('点击灰色非承重墙标记拆除，再次点击恢复 · 黑色承重墙不可拆', 'Click a grey non-bearing wall to remove it, click again to restore · black bearing walls cannot be removed'),
     calibrate:tr('标定：点外墙长边两端并输入真实 mm；或改选「建筑面积」填㎡反推比例', 'Calibrate: click two ends of a long exterior wall + real mm; or use building area m²'),
     drawwall:tr('连续折线画墙：点一下继续下一段 · 回车/双击/右键结束 · 默认15°磁吸（Shift或关磁吸=斜墙）· Esc 取消', 'Polyline walls: click to continue · Enter/double-click/right-click ends · 15° snap (Shift/off = free angle)'),
-    erasewall:tr('点击墙段删除（几何命中）· 删完后请「识别房间」', 'Click a wall to delete (geometric hit) · then Detect rooms'),
+    erasewall:tr('点墙删墙 / 点门窗删门窗 · 删完后请「识别房间」', 'Click wall or opening to delete · then Detect rooms'),
     placeentry:tr('点击墙体放置入户门（漫游入口）· Esc 退出', 'Click a wall to place the entry door · Esc exits'),
     placedoor:tr('点击墙体放置门 · Esc 退出', 'Click a wall to place a door · Esc exits'),
     placewin:tr('点击墙体放置窗 · Esc 退出', 'Click a wall to place a window · Esc exits')};
@@ -1772,15 +1789,58 @@ svg.addEventListener('pointerdown', e => {
     renderWbPreview(); return;
   }
   if (ui.tool === 'erasewall'){
+    // 优先删门窗构件
+    const doorEl = t.closest('[data-door]');
+    const winEl = t.closest('[data-win]');
+    if (doorEl || winEl){
+      mutate(() => {
+        if (doorEl){
+          const di = +doorEl.dataset.door;
+          if (di >= 0 && di < DOORS.length) DOORS.splice(di, 1);
+        } else {
+          const wi = +winEl.dataset.win;
+          if (wi >= 0 && wi < WINS.length) WINS.splice(wi, 1);
+        }
+        if (GEOM_SOURCE === 'ai-draft') GEOM_SOURCE = 'custom';
+        persistGeometry();
+      });
+      renderOpenings();
+      try { window.View3D?.sync(true); } catch(e) {}
+      toast(tr('已删除门窗', 'Opening removed'));
+      return;
+    }
+    const hitOpen = WallWorkbench.findOpeningAt
+      ? WallWorkbench.findOpeningAt({ doors: DOORS, wins: WINS, slides: SLIDES }, p, 160)
+      : null;
+    if (hitOpen){
+      mutate(() => {
+        if (hitOpen.type === 'door') DOORS.splice(hitOpen.index, 1);
+        else if (hitOpen.type === 'win') WINS.splice(hitOpen.index, 1);
+        else if (hitOpen.type === 'slide') SLIDES.splice(hitOpen.index, 1);
+        if (GEOM_SOURCE === 'ai-draft') GEOM_SOURCE = 'custom';
+        persistGeometry();
+      });
+      renderOpenings();
+      try { window.View3D?.sync(true); } catch(e) {}
+      toast(tr('已删除门窗', 'Opening removed'));
+      return;
+    }
     let idx = -1;
     const el = t.closest('[data-wall]');
     if (el) idx = +el.dataset.wall.slice(1);
     if (!(idx >= 0)) idx = WallWorkbench.findWallIndex(WALLS, p, 160);
-    if (!(idx >= 0) || idx >= WALLS.length){ toast(tr('未命中墙段', 'No wall hit')); return; }
+    if (!(idx >= 0) || idx >= WALLS.length){ toast(tr('未命中墙/门窗', 'No wall or opening hit')); return; }
     mutate(() => {
       WALLS.splice(idx, 1);
       state.demolished = [];
       GEOM_SOURCE = 'custom';
+      ui.selWalls && ui.selWalls.delete(idx);
+      // reindex multi-select after splice
+      if (ui.selWalls && ui.selWalls.size){
+        const next = new Set();
+        ui.selWalls.forEach(i => { if (i < idx) next.add(i); else if (i > idx) next.add(i - 1); });
+        ui.selWalls = next;
+      }
       if (ui.sel?.kind === 'wall') ui.sel = null;
       persistGeometry();
     });
@@ -1837,7 +1897,20 @@ svg.addEventListener('pointerdown', e => {
       const wi = WallWorkbench.findWallIndex(WALLS, p, 120);
       if (wi >= 0) wid = 'w' + wi;
     }
-    if (wid){ select({kind:'wall', id:wid}); return; }
+    if (wid){
+      const widx = +String(wid).slice(1);
+      if (!ui.selWalls) ui.selWalls = new Set();
+      if (e.shiftKey){
+        if (ui.selWalls.has(widx)) ui.selWalls.delete(widx);
+        else ui.selWalls.add(widx);
+        select({kind:'wall', id:wid});
+        renderWalls(); renderSel();
+        return;
+      }
+      ui.selWalls = new Set([widx]);
+      select({kind:'wall', id:wid});
+      return;
+    }
     const room = t.closest('[data-room]');
     drag = {kind:'pan', sx:e.clientX, sy:e.clientY, x0:view.x0, y0:view.y0, room:room && room.dataset.room, moved:false};
   } else {
@@ -2440,6 +2513,90 @@ function applyWizardPicks(){
     document.getElementById('wbDraftBanner')?.classList.remove('show');
   });
   document.getElementById('wbAiDraft')?.addEventListener('click', () => { runAiWallDraft(); });
+  document.getElementById('wbAlignOrtho')?.addEventListener('click', () => { runAlignOrtho(); });
+  document.getElementById('wbRedrawSeg')?.addEventListener('click', () => { runRedrawSegment(); });
+  document.getElementById('wbEraseMember')?.addEventListener('click', () => {
+    setTool('erasewall');
+    toast(tr('删构件：点墙删墙，点门窗删门窗', 'Delete: click wall or opening'));
+  });
+  document.getElementById('wbAcceptDraft')?.addEventListener('click', () => { acceptAiDraft(); });
+
+  function selectedWallIndices(){
+    const s = new Set(ui.selWalls || []);
+    if (ui.sel?.kind === 'wall'){
+      const i = +String(ui.sel.id).slice(1);
+      if (i >= 0) s.add(i);
+    }
+    return [...s].filter(i => i >= 0 && i < WALLS.length).sort((a,b)=>a-b);
+  }
+  function runAlignOrtho(){
+    if (!WALLS.length){ toast(tr('无墙可对齐', 'No walls to align')); return; }
+    const idxs = selectedWallIndices();
+    const res = WallWorkbench.alignWallsOrtho(WALLS, idxs.length ? idxs : null, {});
+    if (!res.changed){
+      toast(tr('已接近正交，无需调整（或选中的是斜墙）', 'Already ortho or slanted walls skipped'));
+      return;
+    }
+    mutate(() => {
+      WALLS = res.walls;
+      if (GEOM_SOURCE === 'ai-draft') GEOM_SOURCE = 'custom';
+      persistGeometry();
+    });
+    try { window.View3D?.sync(true); } catch(e) {}
+    toast(tr(`已正交对齐 ${res.changed} 段`, `Ortho-aligned ${res.changed} segment(s)`));
+  }
+  function runRedrawSegment(){
+    const idxs = selectedWallIndices();
+    if (!idxs.length){
+      toast(tr('请先选中要重画的墙段', 'Select a wall segment first'));
+      setTool('select');
+      return;
+    }
+    const idx = idxs[idxs.length - 1];
+    const doomed = WALLS[idx];
+    const cl = WallWorkbench.wallCenterline(doomed);
+    const startCandidates = [cl.a, cl.b];
+    mutate(() => {
+      WALLS.splice(idx, 1);
+      state.demolished = [];
+      GEOM_SOURCE = 'custom';
+      ui.selWalls = new Set();
+      ui.sel = null;
+      persistGeometry();
+    });
+    // 从邻近仍存在的角点吸附起步
+    let start = startCandidates[0];
+    let best = Infinity;
+    startCandidates.forEach(cand => {
+      const c = WallWorkbench.findWallCorner(WALLS, cand, 200);
+      if (c && Math.hypot(c.pt.x - cand.x, c.pt.y - cand.y) < best){
+        best = Math.hypot(c.pt.x - cand.x, c.pt.y - cand.y);
+        start = { x: c.pt.x, y: c.pt.y };
+      }
+    });
+    const g = WallWorkbench.GRID;
+    start = { x: WallWorkbench.snap(start.x, g), y: WallWorkbench.snap(start.y, g) };
+    setTool('drawwall');
+    ui.wbA = start; ui.wbCur = start;
+    renderWbPreview();
+    try { window.View3D?.sync(true); } catch(e) {}
+    toast(tr('已删该段 · 从角点继续画墙（回车结束）', 'Segment removed · continue drawing from corner'));
+  }
+  function acceptAiDraft(){
+    if (GEOM_SOURCE !== 'ai-draft'){
+      toast(tr('当前不是识墙草稿', 'Not an AI draft'));
+      return;
+    }
+    mutate(() => {
+      GEOM_SOURCE = 'custom';
+      persistGeometry();
+      savePipeline({ geomSource: 'custom' });
+    });
+    syncDraftBanner();
+    setTool('select');
+    toast(tr('已接受草稿，可继续正常编辑', 'Draft accepted — continue editing'));
+  }
+
 
   async function runAiWallDraft(){
     const pipe = loadPipeline();

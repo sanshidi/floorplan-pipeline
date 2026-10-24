@@ -3,7 +3,7 @@
 纯浏览器静态站点：上传户型图 → **标定比例 → 连续折线描墙 → 识别房间** → 选材质排家具 → 2D/3D → 按封闭面积估造价。
 
 墙线默认由用户对照底图手画（也可从内置三居室样板起步）。  
-**可选**：本地 Node 识墙草稿 API，一键写入可编辑墙（**stub/启发式，必人工核对**）；关掉 API 时仍可完整手画，不白屏。
+**可选**：本地 Node 识墙草稿 API（默认 OpenCV 线检测，必人工核对）；关掉 API 时仍可完整手画，不白屏。
 
 ## 本地运行（纯静态，必选路径）
 
@@ -15,26 +15,27 @@ python3 -m http.server 8765
 
 主入口：`index.html`（向导）· 设计器：`editor.html`（可单独打开）。
 
-## 可选：识墙草稿 API（P1 MVP）
+## 可选：识墙草稿 API（P1）
 
 ```bash
 cd server
 npm install
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 npm start
-# http://127.0.0.1:8787
+# http://127.0.0.1:8787   ENGINE 默认 cv
 ```
 
 自测：
 
 ```bash
 curl -s -F "file=@test-floorplan.png" http://127.0.0.1:8787/v1/vectorize
-# → {"jobId":"job_…"}  再 GET /v1/jobs/:id 直到 succeeded
+# → {"jobId":"job_…"}  再 GET /v1/jobs/:id 直到 succeeded（meta.engine=cv-hough-v1）
 ```
 
-设计器工具栏 **「生成墙草稿」**（有底图时）：轮询 job → 写入 `geometry.source: 'ai-draft'` → 顶部修墙提示。  
-API base：默认 `http://127.0.0.1:8787`；可用 `localStorage.FP_API`、`?api=` 或 `window.FP_API`。
+设计器 **「生成墙草稿」**（有底图）：写入 `source:'ai-draft'`，顶部修墙条提供 **正交对齐 / 重画此段 / 删构件 / 接受草稿**。  
+API：`localStorage.FP_API` / `?api=` / `window.FP_API`，默认 `127.0.0.1:8787`。
 
-当前引擎 **`stub-heuristic-v1`**：按图片宽高（+ 可选 `scaleMmPerPx` / `areaM2`）生成外墙+隔墙示例中心线，**不是**真实 CV / 酷家乐级模型。换引擎只改 `server/src/engine/` adapter。详见 `server/README.md`。
+默认引擎 **`cv-hough-v1`**（OpenCV 线检测草稿，**非**商业级语义识房）；失败自动降级 **`stub-heuristic-v1`**。`ENGINE=stub|cv|external`。详见 `server/README.md`。
 
 ## 关键文件
 
@@ -61,5 +62,5 @@ API base：默认 `http://127.0.0.1:8787`；可用 `localStorage.FP_API`、`?api
 
 - 房间识别为栅格洪水填充近似；极密斜墙/开口可能需人工调整
 - 自建房间 id 为自动生成；向导勾选的样板房间材质主要在「样板起步」时生效
-- 识墙草稿为 stub/启发式示例墙，尺度可叠常见户型，**不能**当自动建模成品
+- 识墙草稿为 OpenCV 线检测（或降级 stub），**不能**当商业级自动建模成品；须人工修墙
 - 未做账号同步 / 云存档
