@@ -132,12 +132,13 @@
       <h3 style="margin:16px 0 8px;font-size:1rem">作业备份（本机存档）</h3>
       <textarea class="json-box" id="jobJson" readonly></textarea>
       <div class="row">
-        <button class="btn primary" type="button" id="downloadJob">下载备份文件</button>
+        <button class="btn primary" type="button" id="downloadBundle">下载本地包</button>
+        <button class="btn" type="button" id="downloadJob">下载备份 JSON</button>
         <button class="btn" type="button" id="copyJob">复制备份内容</button>
         <button class="btn" type="button" data-goto="design">← 回到设计器</button>
         <button class="btn danger" type="button" id="resetAll">清空本机作业与方案</button>
       </div>
-      <p class="footer-note">PNG 导出请在设计器顶栏「文件 → 导出图片」完成（2D 或 3D 截图）。</p>
+      <p class="footer-note">「下载本地包」生成 ZIP（plan.json + 可选底图 + README），不依赖云服务。平面/3D 图片也可在设计器「文件」菜单导出。</p>
     </section>
 
     <!-- 能力说明：折叠，不挡主路径 -->
@@ -160,6 +161,7 @@
       </div>
     </details>
   </div>
+  <script src="./zip-store.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

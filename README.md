@@ -46,6 +46,7 @@ API：`localStorage.FP_API` / `?api=` / `window.FP_API`，默认 `127.0.0.1:8787
 | `wall-workbench.js` | 中心线墙几何、标定、房间识别、pack/unpack |
 | `ai-draft-client.js` | 可选识墙客户端（vectorize + 轮询） |
 | `cloud-client.js` | 云存档 / 分享链接客户端 |
+| `zip-store.js` | 无压缩 ZIP（本地包，无 CDN） |
 | `share.html` | 分享只读预览（复制到本地编辑） |
 | `server/` | Node Express：识墙 + 项目存档 |
 | `PRODUCT.md` | 产品定位与 schema 说明 |
@@ -60,6 +61,18 @@ API：`localStorage.FP_API` / `?api=` / `window.FP_API`，默认 `127.0.0.1:8787
 
 墙体支持旧 AABB `[x0,y0,x1,y1,kind]` 与中心线 `[x0,y0,x1,y1,kind,thick]`（详见 `PRODUCT.md`）。
 
+
+
+## 本地备份（不依赖云）
+
+设计器「文件 → **下载本地包**」或向导导出页「**下载本地包**」生成 ZIP：
+
+- `plan.json` — 可再导入的方案（超大底图 dataURL 会剔出以免卡死）
+- `plan.png` — 2D 平面（失败则降级无底图 / 降分辨率，仍尽量给出文件）
+- `underlay.*` — 参照底图（若有）
+- `README.txt` — 如何重新导入
+
+导出图片/JSON 已加固：`download()` 会把 `<a>` 挂到 DOM；失败有 toast。
 
 ## 可选：云存档与分享
 

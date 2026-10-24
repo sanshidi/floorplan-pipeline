@@ -409,15 +409,121 @@
   $('#openEditor').onclick = () => openEditor(false);
   $('#openEditorTab').onclick = () => openEditor(true);
 
-  $('#downloadJob').onclick = () => {
+
+  function downloadBlob(name, blob, fallbackName) {
+    try {
+      if (!blob || !(blob instanceof Blob) || blob.size === 0) {
+        alert('导出失败：空文件');
+        return false;
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name || fallbackName || 'download.bin';
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try { URL.revokeObjectURL(a.href); } catch (e) {}
+        try { a.remove(); } catch (e) {}
+      }, 1500);
+      return true;
+    } catch (e) {
+      alert('下载失败：' + (e && e.message ? e.message : e));
+      return false;
+    }
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    try {
+      const m = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl || '');
+      if (!m) return null;
+      const mime = m[1] || 'application/octet-stream';
+      const isB64 = !!m[2];
+      const data = m[3] || '';
+      if (isB64) {
+        const bin = atob(data);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+      }
+      return new Blob([decodeURIComponent(data)], { type: mime });
+    } catch (e) { return null; }
+  }
+
+  function safeJobJsonText() {
     renderExport();
-    const blob = new Blob([$('#jobJson').value], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = '户型作业备份.json';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    let raw = $('#jobJson').value;
+    try {
+      const obj = JSON.parse(raw || '{}');
+      const stripped = JSON.parse(JSON.stringify(obj, (k, v) => {
+        if (typeof v === 'string' && v.length > 120000 && /^data:/i.test(v)) return undefined;
+        return v;
+      }));
+      // keep a pointer that underlay was omitted
+      if (state && state.imageDataUrl) stripped._underlayOmitted = true;
+      return JSON.stringify(stripped, null, 2);
+    } catch (e) {
+      return raw || '{}';
+    }
+  }
+
+  $('#downloadJob').onclick = () => {
+    try {
+      const text = safeJobJsonText();
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      const ok = downloadBlob('户型作业备份.json', blob, 'floorplan-job.json');
+      if (ok) alert('已下载备份 JSON（超大底图已剔除；完整备份请用「下载本地包」）');
+    } catch (e) {
+      alert('下载备份失败：' + (e && e.message ? e.message : e));
+    }
   };
+
+  $('#downloadBundle') && ($('#downloadBundle').onclick = async () => {
+    try {
+      const text = safeJobJsonText();
+      const files = [
+        { name: 'plan.json', data: text },
+        { name: 'README.txt', data:
+          '户型临摹工作台 · 本地方案包（向导导出）\n'
+          + '====================\n'
+          + '  plan.json     — 作业/方案摘要（可在设计器导入 geometry 所在完整方案更佳）\n'
+          + '  underlay.*    — 参照底图（若有）\n'
+          + '  README.txt    — 本说明\n\n'
+          + '重新打开：打开 editor.html → 文件 → 导入方案（完整方案请在设计器内「下载本地包」）。\n'
+          + '生成时间：' + new Date().toISOString() + '\n'
+        },
+      ];
+      // design store
+      try {
+        const design = localStorage.getItem('huxing-design-v1');
+        if (design) {
+          const stripped = JSON.stringify(JSON.parse(design), (k, v) => {
+            if (typeof v === 'string' && v.length > 120000 && /^data:/i.test(v)) return undefined;
+            return v;
+          }, 2);
+          files.push({ name: 'design.json', data: stripped });
+        }
+      } catch (e) {}
+      if (state && state.imageDataUrl) {
+        const ub = dataUrlToBlob(state.imageDataUrl);
+        if (ub) {
+          const ext = /jpeg/i.test(ub.type) ? 'jpg' : (/webp/i.test(ub.type) ? 'webp' : 'png');
+          files.push({ name: 'underlay.' + ext, data: ub });
+        }
+      }
+      if (!window.ZipStore || typeof ZipStore.build !== 'function') {
+        downloadBlob('户型作业备份.json', new Blob([text], { type: 'application/json' }), 'floorplan-job.json');
+        alert('ZIP 组件未加载，已改下 JSON');
+        return;
+      }
+      const zip = await ZipStore.build(files);
+      const ok = downloadBlob('户型方案包.zip', zip, 'floorplan-bundle.zip');
+      if (ok) alert('已下载本地包 ZIP');
+    } catch (e) {
+      alert('本地包失败：' + (e && e.message ? e.message : e));
+    }
+  });
   $('#copyJob').onclick = async () => {
     renderExport();
     try {

@@ -365,6 +365,7 @@ body.walking #walkExit{display:block}
       <div class="menu-pop">
         <button class="btn" id="exportPng" data-en="Export image">导出图片</button>
         <button class="btn" id="exportJson" data-en="Export plan JSON">导出方案 JSON</button>
+        <button class="btn primary" id="exportBundle" data-en="Download local pack">下载本地包</button>
         <button class="btn" id="cloudSave" data-en="Save to cloud">保存到云端</button>
         <button class="btn" id="cloudShare" data-en="Copy share link">复制分享链接</button>
         <button class="btn" id="importJson" data-en="Import plan">导入方案</button>
@@ -452,6 +453,7 @@ body.walking #walkExit{display:block}
 <script src="./wall-workbench.js"></script>
 <script src="./ai-draft-client.js"></script>
 <script src="./cloud-client.js"></script>
+<script src="./zip-store.js"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -2133,24 +2135,290 @@ addEventListener('pointerup', e => endLibDrag(e, true));
 addEventListener('pointercancel', e => endLibDrag(e, false));
 
 /* ======================= 导入导出 ======================= */
-function download(name, blob){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
-function exportPNG(){
-  if (is3D()) return window.View3D.shot();
-  const clone = svg.cloneNode(true), W = 3200, H = Math.round(W*BOUNDS().h/BOUNDS().w);
-  clone.setAttribute('viewBox', `${BOUNDS().x} ${BOUNDS().y} ${BOUNDS().w} ${BOUNDS().h}`);
-  clone.setAttribute('width', W); clone.setAttribute('height', H);
-  clone.querySelector('#gSel').innerHTML = '';
-  clone.querySelector('#gGrid').innerHTML = `<rect x="-20000" y="-20000" width="55000" height="55000" fill="${ui.layers.grid?'url(#grid)':'#f7f4ee'}"/>`;
-  const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
-  Object.entries({x:-20000,y:-20000,width:55000,height:55000,fill:'#f7f4ee'}).forEach(([k,v]) => bg.setAttribute(k,v));
-  clone.insertBefore(bg, clone.querySelector('#gGrid'));
-  const img = new Image();
-  img.onload = () => {
-    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-    cv.getContext('2d').drawImage(img, 0, 0, W, H);
-    cv.toBlob(b => download(tr('户型装修方案', 'floor-plan-design') + '.png', b));
+function asciiFallbackName(name, fallback){
+  const n = String(name || '');
+  if (/^[\x20-\x7E]+$/.test(n) && n.trim()) return n;
+  return fallback || 'floorplan-plan.bin';
+}
+/** Robust download: append <a> to DOM, click, remove. Toast on empty blob. */
+function download(name, blob, fallbackName){
+  try {
+    if (!blob || !(blob instanceof Blob) || blob.size === 0) {
+      toast(tr('导出失败：空文件', 'Export failed: empty file'));
+      return false;
+    }
+    const fname = name || fallbackName || 'download.bin';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(a.href); } catch(e) {}
+      try { a.remove(); } catch(e) {}
+    }, 1500);
+    return true;
+  } catch (e) {
+    console.warn(e);
+    toast(tr('下载失败：', 'Download failed: ') + (e.message || e));
+    return false;
+  }
+}
+
+function dataUrlToBlob(dataUrl){
+  try {
+    const m = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl || '');
+    if (!m) return null;
+    const mime = m[1] || 'application/octet-stream';
+    const isB64 = !!m[2];
+    const data = m[3] || '';
+    if (isB64) {
+      const bin = atob(data);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: mime });
+    }
+    return new Blob([decodeURIComponent(data)], { type: mime });
+  } catch (e) { return null; }
+}
+
+/** Strip huge dataURLs from plan JSON; return { json, underlayDataUrl } */
+function buildExportPlan(st){
+  const underlayKeys = ['underlay', 'imageDataUrl', 'refDataUrl', 'thumbnailDataUrl'];
+  let underlayDataUrl = null;
+  const replacer = (k, v) => {
+    if (typeof v === 'string' && v.length > 120000 && /^data:/i.test(v)) {
+      if (!underlayDataUrl && (underlayKeys.includes(k) || v.indexOf('image/') > 0)) underlayDataUrl = v;
+      return undefined;
+    }
+    return v;
   };
-  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(clone));
+  let json;
+  try {
+    // Also pull underlay from pipeline if present
+    try {
+      const pipe = (typeof loadPipeline === 'function') ? loadPipeline() : null;
+      if (pipe && pipe.imageDataUrl && String(pipe.imageDataUrl).length > 32) underlayDataUrl = pipe.imageDataUrl;
+    } catch(e) {}
+    json = JSON.stringify(st == null ? {} : st, replacer, 2);
+  } catch (e) {
+    const err = new Error(tr('方案序列化失败：', 'Plan serialize failed: ') + (e.message || e));
+    err.cause = e;
+    throw err;
+  }
+  if (!json || json === '' || json === 'undefined') throw new Error(tr('方案为空', 'Empty plan'));
+  return { json, underlayDataUrl };
+}
+
+function canvasToBlob(cv, type, quality){
+  return new Promise((resolve) => {
+    try {
+      if (cv.toBlob) {
+        cv.toBlob((b) => {
+          if (b && b.size) return resolve(b);
+          try {
+            const du = cv.toDataURL(type || 'image/png', quality);
+            resolve(dataUrlToBlob(du));
+          } catch (e) { resolve(null); }
+        }, type || 'image/png', quality);
+      } else {
+        try {
+          const du = cv.toDataURL(type || 'image/png', quality);
+          resolve(dataUrlToBlob(du));
+        } catch (e) { resolve(null); }
+      }
+    } catch (e) { resolve(null); }
+  });
+}
+
+function loadImageFromUrl(url, timeoutMs){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error('image load timeout'));
+    }, timeoutMs || 12000);
+    img.onload = () => { if (done) return; done = true; clearTimeout(t); resolve(img); };
+    img.onerror = () => { if (done) return; done = true; clearTimeout(t); reject(new Error('image load error')); };
+    img.src = url;
+  });
+}
+
+function preparePlanSvgClone(opts){
+  opts = opts || {};
+  const stripUnderlay = !!opts.stripUnderlay;
+  const maxW = opts.maxW || 2400;
+  const bb = BOUNDS();
+  const W = Math.max(400, Math.min(maxW, 3200));
+  const H = Math.max(300, Math.round(W * (bb.h || 1000) / (bb.w || 1000)));
+  const clone = svg.cloneNode(true);
+  clone.setAttribute('viewBox', `${bb.x} ${bb.y} ${bb.w} ${bb.h}`);
+  clone.setAttribute('width', String(W));
+  clone.setAttribute('height', String(H));
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const gSel = clone.querySelector('#gSel');
+  if (gSel) gSel.innerHTML = '';
+  const gGrid = clone.querySelector('#gGrid');
+  if (gGrid) {
+    gGrid.innerHTML = `<rect x="-20000" y="-20000" width="55000" height="55000" fill="${ui.layers.grid ? 'url(#grid)' : '#f7f4ee'}"/>`;
+  }
+  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  Object.entries({ x: -20000, y: -20000, width: 55000, height: 55000, fill: '#f7f4ee' }).forEach(([k, v]) => bg.setAttribute(k, v));
+  if (gGrid && gGrid.parentNode) gGrid.parentNode.insertBefore(bg, gGrid);
+  else clone.insertBefore(bg, clone.firstChild);
+
+  const ref = clone.querySelector('#refBg');
+  if (ref) {
+    if (stripUnderlay) {
+      ref.removeAttribute('href');
+      try { ref.removeAttributeNS('http://www.w3.org/1999/xlink', 'href'); } catch(e) {}
+      ref.style.display = 'none';
+    } else {
+      // keep underlay; if href is huge foreign data URL it may still fail → caller retries strip
+      ref.style.display = ref.getAttribute('href') || ref.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ? '' : 'none';
+    }
+  }
+  // strip external scripts if any
+  clone.querySelectorAll('script').forEach(s => s.remove());
+  return { clone, W, H };
+}
+
+async function rasterizeSvgClone(clone, W, H){
+  const xml = new XMLSerializer().serializeToString(clone);
+  // Prefer blob: URL — avoids some data-URL length / encoding pitfalls
+  const svgBlob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+  try {
+    const img = await loadImageFromUrl(url, 15000);
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#f7f4ee';
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(img, 0, 0, W, H);
+    const blob = await canvasToBlob(cv, 'image/png');
+    if (!blob) throw new Error('toBlob/toDataURL empty');
+    return blob;
+  } finally {
+    try { URL.revokeObjectURL(url); } catch(e) {}
+  }
+}
+
+/** Export 2D plan PNG; falls back to no-underlay / lower res. Returns Blob|null. */
+async function renderPlanPngBlob(){
+  const attempts = [
+    { stripUnderlay: false, maxW: 2400 },
+    { stripUnderlay: true, maxW: 2400 },
+    { stripUnderlay: true, maxW: 1400 },
+    { stripUnderlay: true, maxW: 800 },
+  ];
+  let lastErr = null;
+  for (const opt of attempts) {
+    try {
+      const { clone, W, H } = preparePlanSvgClone(opt);
+      const blob = await rasterizeSvgClone(clone, W, H);
+      if (blob && blob.size) return { blob, stripped: opt.stripUnderlay, W };
+    } catch (e) {
+      lastErr = e;
+      console.warn('[exportPNG] attempt failed', opt, e);
+    }
+  }
+  throw lastErr || new Error('PNG render failed');
+}
+
+async function exportPNG(){
+  try {
+    if (is3D()) {
+      if (window.View3D && typeof window.View3D.shot === 'function') return window.View3D.shot();
+      return toast(tr('3D 未就绪', '3D not ready'));
+    }
+    toast(tr('正在导出图片…', 'Exporting image…'));
+    const { blob, stripped } = await renderPlanPngBlob();
+    const name = tr('户型装修方案', 'floor-plan-design') + '.png';
+    const ok = download(name, blob, 'floorplan-plan.png');
+    if (ok) toast(stripped
+      ? tr('已导出平面图（无底图降级）', 'Plan PNG exported (underlay stripped)')
+      : tr('已导出平面图', 'Plan PNG exported'));
+  } catch (e) {
+    console.warn(e);
+    toast(tr('导出图片失败：', 'PNG export failed: ') + (e.message || e));
+  }
+}
+
+async function exportJsonSafe(){
+  try {
+    try { persistGeometry(); } catch(e) { try { save(); } catch(e2) {} }
+    const { json } = buildExportPlan(state);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const name = tr('户型装修方案', 'floor-plan-design') + '.json';
+    const ok = download(name, blob, 'floorplan-plan.json');
+    if (ok) toast(tr('已导出方案 JSON（大图已剔除，请用「下载本地包」保留底图）', 'JSON exported (large images omitted — use local pack for underlay)'));
+  } catch (e) {
+    console.warn(e);
+    toast(tr('导出 JSON 失败：', 'JSON export failed: ') + (e.message || e));
+  }
+}
+
+async function exportLocalBundle(){
+  try {
+    if (!window.ZipStore || typeof ZipStore.build !== 'function') {
+      toast(tr('ZIP 组件未加载，改导出 JSON', 'ZIP helper missing — falling back to JSON'));
+      return exportJsonSafe();
+    }
+    toast(tr('正在打包本地包…', 'Building local pack…'));
+    try { persistGeometry(); } catch(e) { try { save(); } catch(e2) {} }
+
+    const { json, underlayDataUrl } = buildExportPlan(state);
+    const files = [
+      { name: 'plan.json', data: json },
+      { name: 'README.txt', data:
+        '户型临摹工作台 · 本地方案包\n'
+        + '====================\n'
+        + '内容：\n'
+        + '  plan.json     — 完整可再导入的方案（几何/家具/材质）\n'
+        + '  plan.png      — 2D 平面导出（若生成成功）\n'
+        + '  underlay.png  — 参照底图（若有）\n'
+        + '  README.txt    — 本说明\n\n'
+        + '如何重新打开：\n'
+        + '  1. 用浏览器打开本仓库的 editor.html（或向导 index.html）\n'
+        + '  2. 设计器「文件 → 导入方案」选择解压后的 plan.json\n'
+        + '  3. 底图可在向导重新上传，或保留 underlay.png 自行对照\n\n'
+        + '说明：本包不依赖云存档；云服务失败时也可用此包备份。\n'
+        + '生成时间：' + new Date().toISOString() + '\n'
+      },
+    ];
+
+    // PNG (best-effort)
+    try {
+      const { blob } = await renderPlanPngBlob();
+      if (blob) files.push({ name: 'plan.png', data: blob });
+    } catch (e) {
+      console.warn('bundle png skip', e);
+      files.push({ name: 'plan-png-FAILED.txt', data: '平面图导出失败：' + (e.message || e) + '\n仍可导入 plan.json。\n' });
+    }
+
+    // underlay
+    if (underlayDataUrl) {
+      const ub = dataUrlToBlob(underlayDataUrl);
+      if (ub) {
+        const ext = /image\/jpeg/i.test(ub.type) ? 'jpg' : (/image\/webp/i.test(ub.type) ? 'webp' : 'png');
+        files.push({ name: 'underlay.' + ext, data: ub });
+      }
+    }
+
+    const zipBlob = await ZipStore.build(files);
+    const zh = '户型方案包.zip';
+    const ok = download(zh, zipBlob, 'floorplan-bundle.zip');
+    if (ok) toast(tr('已下载本地包（ZIP）', 'Local pack (ZIP) downloaded'));
+  } catch (e) {
+    console.warn(e);
+    toast(tr('本地包失败：', 'Local pack failed: ') + (e.message || e) + tr('，尝试导出 JSON', ' — trying JSON'));
+    try { await exportJsonSafe(); } catch (e2) {}
+  }
 }
 
 /* ======================= 杂项 ======================= */
@@ -2218,8 +2486,9 @@ $('#tgPanel').onclick = () => drawer('panel');
 document.addEventListener('pointerdown', e => { const m = $('details.menu'); if (m.open && !m.contains(e.target)) m.open = false; });
 matchMedia('(max-width:1100px)').addEventListener('change', () => drawer(null));
 drawer(null);                                  // 恢复上次的面板收起状态
-$('#exportPng').onclick = exportPNG;
-$('#exportJson').onclick = () => download(tr('户型装修方案', 'floor-plan-design') + '.json', new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
+$('#exportPng').onclick = () => { exportPNG(); };
+$('#exportJson').onclick = () => { exportJsonSafe(); };
+$('#exportBundle') && ($('#exportBundle').onclick = () => { exportLocalBundle(); });
 
 async function cloudSaveOrShare(copyLinkOnly){
   if (!window.FloorplanCloud) {
@@ -2257,10 +2526,10 @@ async function cloudSaveOrShare(copyLinkOnly){
     return out;
   } catch (e) {
     console.warn(e);
-    toast(tr('云存档失败，已改用本地导出 JSON', 'Cloud save failed — exporting JSON locally'));
-    try {
-      download(tr('户型装修方案', 'floor-plan-design') + '.json', new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
-    } catch (e2) {}
+    toast(tr('云存档失败，改为下载本地包…', 'Cloud save failed — downloading local pack…'));
+    try { await exportLocalBundle(); } catch (e2) {
+      try { await exportJsonSafe(); } catch (e3) {}
+    }
   }
 }
 $('#cloudSave') && ($('#cloudSave').onclick = () => cloudSaveOrShare(false));
@@ -4062,7 +4331,28 @@ function loop(){
   labelRenderer.render(scene, camera);
 }
 
-function shot(){ const a = document.createElement('a'); a.download = tr('户型装修方案', 'floor-plan-design') + '-3D.png'; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
+function shot(){
+    try {
+      const du = renderer.domElement.toDataURL('image/png');
+      const blob = (typeof dataUrlToBlob === 'function') ? dataUrlToBlob(du) : null;
+      if (blob) {
+        download(tr('户型装修方案', 'floor-plan-design') + '-3D.png', blob, 'floorplan-plan-3d.png');
+        toast(tr('已导出 3D 截图', '3D snapshot exported'));
+      } else {
+        // last resort: still try anchor with data URL but append to DOM
+        const a = document.createElement('a');
+        a.download = 'floorplan-plan-3d.png';
+        a.href = du;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => a.remove(), 1000);
+        toast(tr('已导出 3D 截图', '3D snapshot exported'));
+      }
+    } catch (e) {
+      toast(tr('3D 截图失败：', '3D snapshot failed: ') + (e.message || e));
+    }
+  }
 
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
